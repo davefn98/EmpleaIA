@@ -1,0 +1,658 @@
+@import "tailwindcss";
+
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Definir variables de colores personalizados para compatibilidad con Tailwind CSS v4 */
+  --color-indigo-650: #4338ca; /* Un tono índigo profundo premium (originalmente entre 600 y 700) */
+  --color-indigo-55: #eff6ff; /* Un tono índigo pastel suave para fondos */
+  --color-rose-650: #be123c; /* Un rojo rosa elegante de buena visibilidad y contraste */
+  --color-rose-50: #fff1f2;
+  --color-rose-100: #ffe4e6;
+  --color-emerald-650: #047857; /* Verde esmeralda profundo premium */
+  --color-emerald-55: #ecfdf5; /* Verde pastel suave para fondos */
+  --color-slate-105: #f8fafc; /* Gris slate muy claro y premium para fondos alternativos */
+  --color-slate-450: #64748b; /* Gris intermedio para textos secundarios legibles */
+  --color-slate-455: #475569; /* Gris oscuro secundario de alta accesibilidad */
+  --color-slate-650: #334155; /* Slate profundo para textos y bordes oscuros */
+  --color-slate-850: #1e293b; /* Slate intenso para títulos de fila (usado en tablas) */
+}
+
+.sidebar-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.sidebar-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ========================================================= */
+/* SOPORTE GLOBAL DE MODO OSCURO (DARK MODE) OVERRIDES        */
+/*                                                            */
+/* Tokens del tema oscuro. Dark suave: sin negro puro ni      */
+/* blanco puro; superficies en tres niveles (fondo, shell,    */
+/* card) y bordes translúcidos para reducir ruido visual.     */
+/* ========================================================= */
+:root {
+  /* Light Mode Tokens */
+  --bg-app:          #ffffff;
+  --bg-sidebar:      #ffffff;
+  --bg-header:       rgba(255, 255, 255, 0.9);
+  --bg-card:         #ffffff;
+  --bg-input:        #f8fafc; /* slate-50 */
+  --text-primary:    #0f172a; /* slate-900 */
+  --text-secondary:  #475569; /* slate-600 */
+  --text-muted:      #94a3b8; /* slate-400 */
+  --border-color:    rgba(226, 232, 240, 0.8); /* slate-200/80 */
+  --accent-primary:  #4f46e5; /* indigo-600 */
+  --accent-hover:    #4338ca; /* indigo-700 */
+}
+
+.dark {
+  color-scheme: dark;
+  background-color: #0f172a;
+  --dk-bg:           #0f172a;                     /* fondo general */
+  --dk-shell:        #111827;                     /* sidebar y header */
+  --dk-surface:      #1e293b;                     /* cards principales */
+  --dk-inset:        #111827;                     /* inputs y superficies hundidas */
+  --dk-border:       rgba(148, 163, 184, 0.18);   /* borde estándar */
+  --dk-border-soft:  rgba(148, 163, 184, 0.10);   /* divisores de tabla */
+  --dk-text:         #f8fafc;                     /* texto principal */
+  --dk-text-2:       #cbd5e1;                     /* texto secundario */
+  --dk-text-3:       #a3b1c6;                     /* secundario suave pero legible */
+  --dk-muted:        #94a3b8;                     /* muted / labels */
+  --dk-accent:       #a5b4fc;                     /* indigo-300: acento sobre oscuro */
+  --dk-accent-bg:    rgba(99, 102, 241, 0.16);    /* fondo de acento */
+  --dk-hover:        rgba(148, 163, 184, 0.10);   /* hover neutro */
+  --dk-hover-accent: rgba(99, 102, 241, 0.14);    /* hover con acento */
+
+  /* Dark Mode Tokens */
+  --bg-app:          #0f172a;
+  --bg-sidebar:      #111827;
+  --bg-header:       #1e293b;
+  --bg-card:         #1e293b;
+  --bg-input:        #111827;
+  --text-primary:    #f8fafc;
+  --text-secondary:  #cbd5e1;
+  --text-muted:      #94a3b8;
+  --border-color:    rgba(148, 163, 184, 0.18);
+  --accent-primary:  #6366f1;
+  --accent-hover:    #4f46e5;
+}
+
+/* Estilos de fondo y textos dinámicos dentro de la aplicación autenticada */
+.auth-theme-container {
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+}
+
+.auth-theme-container .bg-slate-50 {
+  background-color: var(--bg-app) !important;
+}
+
+.auth-theme-container .bg-white {
+  background-color: var(--bg-card) !important;
+  color: var(--text-primary) !important;
+}
+
+.auth-theme-container header.bg-white\/90 {
+  background-color: var(--bg-header) !important;
+}
+
+.auth-theme-container aside.bg-white {
+  background-color: var(--bg-sidebar) !important;
+}
+
+.auth-theme-container .border-slate-200,
+.auth-theme-container .border-slate-200\/80 {
+  border-color: var(--border-color) !important;
+}
+
+.auth-theme-container .text-slate-900,
+.auth-theme-container .text-slate-950,
+.auth-theme-container .text-slate-850 {
+  color: var(--text-primary) !important;
+}
+
+.auth-theme-container .text-slate-600,
+.auth-theme-container .text-slate-650,
+.auth-theme-container .text-slate-700,
+.auth-theme-container .text-slate-800 {
+  color: var(--text-secondary) !important;
+}
+
+.auth-theme-container .text-slate-450,
+.auth-theme-container .text-slate-455,
+.auth-theme-container .text-slate-500 {
+  color: var(--text-secondary) !important;
+}
+
+.auth-theme-container .text-slate-400,
+.auth-theme-container .text-slate-405 {
+  color: var(--text-muted) !important;
+}
+
+/* Inputs, textareas y selects dentro del panel privado en modo oscuro */
+.auth-theme-container.dark input,
+.auth-theme-container.dark textarea,
+.auth-theme-container.dark select {
+  background-color: var(--bg-input) !important;
+  border-color: var(--border-color) !important;
+  color: var(--text-primary) !important;
+}
+
+.dark .bg-slate-50 {
+  background-color: var(--dk-bg) !important;
+}
+
+.dark .bg-white {
+  background-color: var(--dk-surface) !important;
+  color: var(--dk-text) !important;
+}
+
+.dark .bg-white\/90 {
+  background-color: rgba(30, 41, 59, 0.9) !important;
+}
+
+/* Chips y tracks neutros (tabs, cajas de icono, fondos slate suaves) */
+.dark .bg-slate-100 {
+  background-color: rgba(148, 163, 184, 0.08) !important;
+}
+
+.dark .bg-slate-100\/50,
+.dark .bg-slate-100\/60 {
+  background-color: rgba(15, 23, 42, 0.5) !important;
+}
+
+.dark .bg-indigo-50 {
+  background-color: var(--dk-accent-bg) !important;
+  color: #c7d2fe !important; /* indigo-200 */
+  box-shadow: none !important;
+}
+
+.dark .bg-indigo-55,
+.dark .bg-indigo-55\/50,
+.dark .bg-indigo-55\/60,
+.dark .bg-indigo-55\/70 {
+  background-color: var(--dk-accent-bg) !important;
+  color: #c7d2fe !important;
+}
+
+.dark .bg-indigo-100 {
+  background-color: rgba(99, 102, 241, 0.22) !important;
+}
+
+/* Sombra de cards más profunda y sutil sobre fondo oscuro */
+.dark .shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(2, 6, 23, 0.5) !important;
+}
+
+/* Card principal (contenedor de tabla): elevación suave que la separa
+   del fondo sin recurrir a bordes brillantes */
+.dark .bg-white.rounded-2xl.p-6.shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(2, 6, 23, 0.5),
+              0 20px 48px -28px rgba(2, 6, 23, 0.85) !important;
+}
+
+/* Iconos de barra de navegación activos */
+.dark .bg-white.text-indigo-700 {
+  background-color: rgba(99, 102, 241, 0.24) !important;
+  color: #c7d2fe !important;
+}
+
+/* Anillo del ítem activo del sidebar */
+.dark .ring-indigo-200\/80 {
+  --tw-ring-color: rgba(99, 102, 241, 0.38) !important;
+}
+
+/* Tab activo (Todos / CVs / Cartas): resalta sin ser un botón blanco */
+.dark button.bg-white.text-indigo-650 {
+  background-color: rgba(99, 102, 241, 0.18) !important;
+  color: #c7d2fe !important;
+}
+
+/* ---------- Hovers ---------- */
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-slate-100:hover {
+  background-color: var(--dk-hover) !important;
+  color: var(--dk-text) !important;
+}
+
+/* Hover de acciones (ver / editar): tinte de acento */
+.dark .hover\:bg-slate-100\/60:hover {
+  background-color: var(--dk-hover-accent) !important;
+}
+
+/* Hover de filas de tabla: muy sutil */
+.dark .hover\:bg-slate-50\/40:hover {
+  background-color: rgba(148, 163, 184, 0.05) !important;
+}
+
+.dark .hover\:bg-slate-105:hover {
+  background-color: var(--dk-hover) !important;
+  color: var(--dk-text) !important;
+}
+
+.dark .hover\:text-indigo-650:hover {
+  color: var(--dk-accent) !important;
+}
+
+/* Hover de eliminar: rojo suave */
+.dark .hover\:bg-rose-50:hover {
+  background-color: rgba(244, 63, 94, 0.14) !important;
+}
+
+.dark .hover\:text-rose-600:hover {
+  color: #fb7185 !important; /* rose-400 */
+}
+
+/* Hover de acciones de tabla: ver (celeste) y editar (violeta) */
+.dark .hover\:text-sky-600:hover {
+  color: #7dd3fc !important; /* sky-300 */
+}
+
+.dark .hover\:bg-sky-50:hover {
+  background-color: rgba(56, 189, 248, 0.12) !important;
+}
+
+.dark .hover\:text-violet-600:hover {
+  color: #c4b5fd !important; /* violet-300 */
+}
+
+.dark .hover\:bg-violet-50:hover {
+  background-color: rgba(139, 92, 246, 0.12) !important;
+}
+
+.dark .group:hover .group-hover\:bg-white {
+  background-color: rgba(148, 163, 184, 0.16) !important;
+}
+
+/* ---------- Textos ---------- */
+.dark .text-slate-900,
+.dark .text-slate-950,
+.dark .text-slate-850 {
+  color: var(--dk-text) !important;
+}
+
+.dark .text-slate-600,
+.dark .text-slate-650,
+.dark .text-slate-700,
+.dark .text-slate-800 {
+  color: var(--dk-text-2) !important;
+}
+
+/* Secundarios legibles (tipo de documento, fechas, iconos de acción) */
+.dark .text-slate-450,
+.dark .text-slate-455,
+.dark .text-slate-500 {
+  color: var(--dk-text-3) !important;
+}
+
+/* Muted (labels de grupo, headers de tabla, placeholders visuales) */
+.dark .text-slate-400,
+.dark .text-slate-405 {
+  color: var(--dk-muted) !important;
+}
+
+.dark .text-slate-300 {
+  color: #475569 !important; /* iconos decorativos de estados vacíos */
+}
+
+.dark .text-indigo-650,
+.dark .text-indigo-700,
+.dark .text-indigo-600 {
+  color: var(--dk-accent) !important;
+}
+
+.dark .text-rose-650 {
+  color: #fb7185 !important;
+}
+
+.dark .text-emerald-650 {
+  color: #6ee7b7 !important; /* emerald-300 */
+}
+
+/* ---------- Bordes ---------- */
+.dark .border-slate-200,
+.dark .border-slate-100,
+.dark .border-slate-150,
+.dark .border-slate-200\/50,
+.dark .border-slate-200\/60,
+.dark .border-slate-200\/80 {
+  border-color: var(--dk-border) !important;
+}
+
+.dark .border-b,
+.dark .border-t,
+.dark .border-r,
+.dark .border-l {
+  border-color: var(--dk-border) !important;
+}
+
+/* Divisores de filas de tabla: más suaves que el borde estándar */
+.dark .divide-slate-100 > * + *,
+.dark .divide-slate-100 > :not(:last-child) {
+  border-color: var(--dk-border-soft) !important;
+}
+
+/* ---------- Badges de estado e iconos de tipo ---------- */
+/* Borrador */
+.dark span.bg-slate-100.text-slate-700 {
+  background-color: rgba(148, 163, 184, 0.12) !important;
+  border-color: rgba(148, 163, 184, 0.30) !important;
+  color: var(--dk-text-2) !important;
+}
+
+/* Generado */
+.dark span.bg-indigo-50.text-indigo-700 {
+  background-color: var(--dk-accent-bg) !important;
+  border-color: rgba(99, 102, 241, 0.40) !important;
+  color: var(--dk-accent) !important;
+}
+
+/* Descargado */
+.dark .bg-emerald-50,
+.dark .bg-emerald-55 {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+}
+
+.dark span.bg-emerald-50.text-emerald-700 {
+  border-color: rgba(16, 185, 129, 0.38) !important;
+  color: #6ee7b7 !important;
+}
+
+/* Pendiente */
+.dark span.bg-amber-50.text-amber-700 {
+  background-color: rgba(245, 158, 11, 0.12) !important;
+  border-color: rgba(245, 158, 11, 0.38) !important;
+  color: #fcd34d !important;
+}
+
+/* Alertas */
+.dark .bg-rose-50 {
+  background-color: rgba(244, 63, 94, 0.10) !important;
+}
+
+.dark .border-rose-100 {
+  border-color: rgba(244, 63, 94, 0.28) !important;
+}
+
+.dark .border-emerald-100 {
+  border-color: rgba(16, 185, 129, 0.28) !important;
+}
+
+/* Iconos de tipo de documento (CV azul / Carta violeta) */
+.dark .bg-blue-50 {
+  background-color: rgba(59, 130, 246, 0.12) !important;
+}
+
+.dark .border-blue-100 {
+  border-color: rgba(59, 130, 246, 0.30) !important;
+}
+
+.dark .text-blue-600 {
+  color: #93c5fd !important; /* blue-300 */
+}
+
+.dark .bg-violet-50 {
+  background-color: rgba(139, 92, 246, 0.12) !important;
+}
+
+.dark .border-violet-100 {
+  border-color: rgba(139, 92, 246, 0.30) !important;
+}
+
+.dark .text-violet-600 {
+  color: #c4b5fd !important; /* violet-300 */
+}
+
+/* ---------- Formularios, Inputs y Selects ---------- */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: var(--dk-inset) !important;
+  color: var(--dk-text) !important;
+  border-color: rgba(148, 163, 184, 0.22) !important;
+}
+
+/* Gana a `.dark .border-slate-200` (mayor especificidad); sin esto el
+   borde del buscador cae al borde estándar y el input se pierde. */
+.dark input.border-slate-200,
+.dark textarea.border-slate-200,
+.dark select.border-slate-200 {
+  border-color: rgba(148, 163, 184, 0.26) !important;
+}
+
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: var(--dk-muted) !important;
+}
+
+.dark input:focus,
+.dark textarea:focus,
+.dark select:focus {
+  border-color: #6366f1 !important; /* indigo-500 */
+  background-color: var(--dk-inset) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
+}
+
+/* ---------- Cabecera y barra lateral (shell) ---------- */
+/* aside.bg-white: especificidad suficiente para ganarle a `.dark .bg-white`,
+   si no el sidebar hereda el color de card y la card pierde separación. */
+.dark header,
+.dark aside,
+.dark aside.bg-white {
+  background-color: var(--dk-shell) !important;
+  border-color: var(--dk-border) !important;
+}
+
+.dark header {
+  background-color: rgba(17, 24, 39, 0.92) !important; /* respeta el backdrop-blur */
+}
+
+/* ---------- Previsualizaciones del CV/Carta ---------- */
+.dark .bg-slate-50.border.border-slate-200.rounded-xl.p-4.flex.justify-center {
+  background-color: #334155 !important;
+}
+
+/* Las hojas exportables se mantienen blancas para que la vista previa
+   coincida con el documento real (PDF) también en modo oscuro. */
+.dark #letter-sheet-a4-canvas,
+.dark .bg-white.font-serif {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* ---------- Animaciones de Notificaciones y ErrorBoundary ---------- */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes scaleUp {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-scale-up {
+  animation: scaleUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-spin-slow {
+  animation: spinSlow 3s linear infinite;
+}
+
+/* ---------- Orbe animado de la entrevistadora IA (núcleo/halo futurista) ---------- */
+@keyframes aiOrbBreath {
+  0%, 100% { transform: scale(1); opacity: 0.85; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes aiOrbSpeak {
+  0%, 100% { transform: scale(0.92); }
+  30% { transform: scale(1.16); }
+  60% { transform: scale(1.02); }
+  80% { transform: scale(1.11); }
+}
+
+@keyframes aiOrbWave {
+  0% { transform: scale(0.6); opacity: 0.75; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+@keyframes aiOrbHalo {
+  0%, 100% { transform: scale(0.96); opacity: 0.45; }
+  50% { transform: scale(1.15); opacity: 0.95; }
+}
+
+@keyframes aiOrbOrbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.ai-orb {
+  position: relative;
+  height: 6.5rem;
+  width: 6.5rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  --voice-level: 0;
+  --orb-core: radial-gradient(circle at 32% 30%, #a5f3fc 0%, #6366f1 45%, #7c3aed 82%);
+  --orb-glow: rgba(99, 102, 241, 0.4);
+  --orb-ring: rgba(99, 102, 241, 0.45);
+  --orb-wave: rgba(34, 211, 238, 0.65);
+  --orb-particle: #0891b2;
+}
+
+.dark .ai-orb {
+  --orb-core: radial-gradient(circle at 32% 30%, #cffafe 0%, #818cf8 45%, #8b5cf6 82%);
+  --orb-glow: rgba(129, 140, 248, 0.55);
+  --orb-ring: rgba(165, 180, 252, 0.5);
+  --orb-wave: rgba(103, 232, 249, 0.65);
+  --orb-particle: #67e8f9;
+}
+
+.ai-orb__halo {
+  position: absolute;
+  inset: 0.45rem;
+  border-radius: 9999px;
+  background: radial-gradient(circle, var(--orb-glow) 0%, transparent 70%);
+  filter: blur(8px);
+  animation: aiOrbHalo 4s ease-in-out infinite;
+}
+
+.ai-orb__core {
+  position: relative;
+  height: 3.1rem;
+  width: 3.1rem;
+  border-radius: 9999px;
+  background: var(--orb-core);
+  box-shadow: 0 0 18px var(--orb-glow), 0 0 38px var(--orb-glow);
+  animation: aiOrbBreath 4s ease-in-out infinite;
+  transition: transform 90ms linear;
+}
+
+.ai-orb__ring {
+  position: absolute;
+  border-radius: 9999px;
+  border: 1.5px solid var(--orb-ring);
+}
+.ai-orb__ring--inner { inset: 1.5rem; }
+/* El anillo punteado rota siempre: movimiento visible incluso en reposo */
+.ai-orb__ring--mid   { inset: 0.85rem; opacity: 0.85; border-style: dashed; animation: aiOrbOrbit 14s linear infinite; }
+.ai-orb__ring--outer { inset: 0.15rem; opacity: 0.6; }
+
+.ai-orb__wave {
+  position: absolute;
+  inset: 1.3rem;
+  border-radius: 9999px;
+  border: 2.5px solid var(--orb-wave);
+  opacity: 0;
+}
+
+.ai-orb__orbit {
+  position: absolute;
+  inset: 0.45rem;
+  border-radius: 9999px;
+  opacity: 0;
+}
+/* Una partícula orbita lento en todos los estados para que el orbe nunca se vea estático */
+.ai-orb__orbit--a { opacity: 0.55; animation: aiOrbOrbit 7s linear infinite; }
+.ai-orb__particle {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  height: 6px;
+  width: 6px;
+  margin-left: -3px;
+  border-radius: 9999px;
+  background: var(--orb-particle);
+  box-shadow: 0 0 8px var(--orb-particle);
+}
+
+/* Hablando: núcleo pulsando con fuerza + ondas de voz emitiéndose */
+.ai-orb--speaking .ai-orb__core { animation: aiOrbSpeak 1.1s ease-in-out infinite; }
+.ai-orb--speaking .ai-orb__halo { animation-duration: 1.1s; }
+.ai-orb--speaking .ai-orb__wave { animation: aiOrbWave 1.4s ease-out infinite; }
+.ai-orb--speaking .ai-orb__wave:nth-of-type(2) { animation-delay: 0.47s; }
+.ai-orb--speaking .ai-orb__wave:nth-of-type(3) { animation-delay: 0.93s; }
+
+/* Escuchando: halo atento + anillos pulsando + núcleo reactivo al volumen real del micrófono */
+.ai-orb--listening .ai-orb__core {
+  animation: none;
+  transform: scale(calc(1 + var(--voice-level, 0)));
+}
+.ai-orb--listening .ai-orb__halo { animation-duration: 1.8s; }
+.ai-orb--listening .ai-orb__ring--inner { animation: aiOrbBreath 1.8s ease-in-out infinite; }
+.ai-orb--listening .ai-orb__ring--outer { animation: aiOrbBreath 1.8s ease-in-out 0.4s infinite; }
+
+/* Analizando: anillos rotando + partículas orbitando (procesamiento) */
+.ai-orb--analyzing .ai-orb__ring--mid { animation: aiOrbOrbit 2.5s linear infinite; opacity: 1; }
+.ai-orb--analyzing .ai-orb__orbit { opacity: 1; }
+.ai-orb--analyzing .ai-orb__orbit--a { animation: aiOrbOrbit 2s linear infinite; }
+.ai-orb--analyzing .ai-orb__orbit--b { animation: aiOrbOrbit 3s linear infinite reverse; inset: 1rem; }
+.ai-orb--analyzing .ai-orb__orbit--c { animation: aiOrbOrbit 4.2s linear infinite; inset: 1.5rem; }
+.ai-orb--analyzing .ai-orb__particle { height: 7px; width: 7px; top: -3.5px; margin-left: -3.5px; }
+.ai-orb--analyzing .ai-orb__core { animation-duration: 2s; }
+
