@@ -39,10 +39,14 @@ export async function apiRequest(endpoint, method = 'POST', body = null, timeout
     clearTimeout(timeoutId);
 
     // Sesión expirada o inválida: cerrar sesión limpiamente.
-    // onAuthStateChange (SIGNED_OUT) en App.jsx redirige al login.
+    // onAuthStateChange (SIGNED_OUT) en App.jsx redirige al login; el flag
+    // permite que Login muestre el aviso de expiración tras la redirección.
     if (response.status === 401) {
+      sessionStorage.setItem('empleaia_session_expired', '1');
       await supabase.auth.signOut();
-      throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+      const sessionErr = new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+      sessionErr.code = 'SESSION_EXPIRED';
+      throw sessionErr;
     }
 
     // Si la respuesta no es JSON (ej. error crítico del servidor web)
@@ -101,8 +105,11 @@ export async function apiUpload(endpoint, formData, timeoutMs = 60000) {
     clearTimeout(timeoutId);
 
     if (response.status === 401) {
+      sessionStorage.setItem('empleaia_session_expired', '1');
       await supabase.auth.signOut();
-      throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+      const sessionErr = new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+      sessionErr.code = 'SESSION_EXPIRED';
+      throw sessionErr;
     }
 
     const contentType = response.headers.get('content-type');
@@ -115,6 +122,8 @@ export async function apiUpload(endpoint, formData, timeoutMs = 60000) {
     if (!response.ok) {
       const err = new Error(data.error || data.message || 'Error en la petición de red.');
       err.code = data.code;
+      err.status = response.status;
+      err.response = data;
       throw err;
     }
 
@@ -126,7 +135,12 @@ export async function apiUpload(endpoint, formData, timeoutMs = 60000) {
       timeoutErr.code = 'TIMEOUT';
       throw timeoutErr;
     }
-    console.error(`[apiUpload] Falló la petición a ${endpoint}:`, error.message);
+    console.error(`[apiUpload] Falló la petición a ${endpoint}:`, {
+      status: error.status,
+      code: error.code,
+      message: error.message,
+      response: error.response
+    });
     throw error;
   }
 }
