@@ -95,6 +95,13 @@ const candidateExperienceSchema = z.object({
 
 const candidateDataSchema = z.object({
   personal_info: z.object({
+    first_name: z.string().optional(),
+    last_name: z.string().optional(),
+    email: z.string().optional(),
+    phone: z.string().optional(),
+    location: z.string().optional(),
+    linkedin: z.string().optional(),
+    portfolio: z.string().optional(),
     career:      z.string().optional(),
     target_role: z.string().optional(),
     bio:         z.string().nullable().optional(),
@@ -129,6 +136,14 @@ export const aiGeneratedCvSchema = generatedCvSchema.extend({
   work_experience: z.array(aiWorkExperienceSchema),
   technical_skill_order: z.array(z.enum(CV_TECHNICAL_SKILL_CATEGORIES))
     .length(CV_TECHNICAL_SKILL_CATEGORIES.length),
+}).strict();
+
+// Document metadata comes from the candidate, never from generated AI text.
+export const persistedCvSchema = generatedCvSchema.extend({
+  snapshot_version: z.literal(1),
+  personal_info: z.record(z.string()),
+  target_job_description: z.string(),
+  cv_focus: z.string(),
 }).strict();
 
 const stringArrayJsonSchema = { type: 'array', items: { type: 'string' } };

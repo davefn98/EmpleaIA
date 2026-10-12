@@ -29,7 +29,9 @@ const downloadBlob = (pdfBlob, fileName) => {
     link.click();
     link.remove();
   } finally {
-    URL.revokeObjectURL(blobUrl);
+    // The browser consumes the download asynchronously after link.click().
+    const cleanup = setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    cleanup.unref?.();
   }
 };
 
@@ -90,7 +92,7 @@ export const exportToPdf = async (elementId, fileName) => {
     downloadBlob(pdfBlob, options.filename);
     return true;
   } catch (err) {
-    const exportError = new Error(err.message || 'Error durante la exportación a PDF.');
+    const exportError = new Error(err?.message || 'Error durante la exportación a PDF.', { cause: err });
     exportError.code = err.code || 'PDF_EXPORT_ERROR';
     throw exportError;
   }

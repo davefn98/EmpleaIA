@@ -25,6 +25,7 @@ import {
   aiGeneratedCvSchema,
   generatedCvJsonSchema,
   generatedCvSchema,
+  persistedCvSchema,
 } from '../validators/cvValidator.js';
 
 // ---------------------------------------------------------------------------
@@ -571,7 +572,7 @@ export async function generateCv({
   // 3. Consolidar la información estructurada aplicando filtros
   const excludedSkillKeys = new Set((excluded_skills || []).map(normalize));
   const excludedExperienceIds = new Set((excluded_experience_ids || []).map(text));
-  const targetJobDescription = text(target_job_description).trim() || text(profile.target_job_description).trim();
+  const targetJobDescription = text(target_job_description ?? profile.target_job_description).trim();
   const candidateTechnicalSkills = candidate_data?.skills?.technical || profile.technical_skills || [];
   const candidateSoftSkills = candidate_data?.skills?.soft || profile.soft_skills || [];
   const candidateWork = candidate_data?.work_experience || work;
@@ -579,12 +580,15 @@ export async function generateCv({
   const candidateCertifications = candidate_data?.certifications || getCertifications(profile);
   const userInputData = {
     personal_info: {
-      first_name:  profile.first_name,
-      last_name:   profile.last_name,
-      email:       profile.email,
-      phone:       profile.phone,
-      career:      candidate_data?.personal_info?.career || profile.career,
-      target_role: custom_target_role || candidate_data?.personal_info?.target_role || profile.target_role,
+      first_name:  candidate_data?.personal_info?.first_name ?? profile.first_name,
+      last_name:   candidate_data?.personal_info?.last_name ?? profile.last_name,
+      email:       candidate_data?.personal_info?.email ?? profile.email,
+      phone:       candidate_data?.personal_info?.phone ?? profile.phone,
+      location:    candidate_data?.personal_info?.location ?? profile.location,
+      linkedin:    candidate_data?.personal_info?.linkedin ?? profile.linkedin,
+      portfolio:   candidate_data?.personal_info?.portfolio ?? profile.portfolio,
+      career:      candidate_data?.personal_info?.career ?? profile.career,
+      target_role: custom_target_role ?? candidate_data?.personal_info?.target_role ?? profile.target_role,
       bio:         candidate_data?.personal_info?.bio ?? profile.bio,
       cv_focus:    cv_focus || 'ATS',
     },
@@ -629,6 +633,17 @@ export async function generateCv({
     );
     cvJson = generatedCvSchema.parse(buildFallbackCv(profile, userInputData, targetJobDescription));
   }
+
+  cvJson = persistedCvSchema.parse({
+    ...cvJson,
+    snapshot_version: 1,
+    personal_info: Object.fromEntries(
+      ['first_name', 'last_name', 'email', 'phone', 'location', 'linkedin', 'portfolio', 'career', 'target_role']
+        .map((field) => [field, text(userInputData.personal_info[field])])
+    ),
+    target_job_description: targetJobDescription,
+    cv_focus: cv_focus || 'ATS',
+  });
 
   // 5. Guardar en la base de datos.
   // Si el esquema real no tiene alguna columna de metadatos (migración

@@ -328,6 +328,9 @@ export async function updateUserLetter({ db, id, userId, fields }) {
   if (fields.status         !== undefined) updatePayload.status         = fields.status;
   if (fields.document_title !== undefined) updatePayload.document_title = fields.document_title;
   if (fields.letter_content !== undefined) updatePayload.letter_content = fields.letter_content;
+  for (const field of ['job_offer_text', 'company', 'target_role', 'job_description', 'tone']) {
+    if (fields[field] !== undefined) updatePayload[field] = fields[field];
+  }
   updatePayload.updated_at = new Date().toISOString();
 
   const { data: updatedLetter, error } = await letterRepo.updateLetter(db, id, userId, updatePayload);

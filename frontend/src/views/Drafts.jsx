@@ -17,6 +17,7 @@ import {
   X
 } from 'lucide-react';
 import CVPreview from '../components/cv/CVPreview';
+import { restoreCvDocument, restoreCvTheme } from '../utils/documentDrafts';
 
 export default function Drafts({ navigateTo }) {
   const { toast, showConfirm } = useNotification();
@@ -127,6 +128,7 @@ export default function Drafts({ navigateTo }) {
 
   const handleEdit = (doc) => {
     if (doc.type === 'cv') {
+      localStorage.removeItem('empleaia_edit_letter_id');
       localStorage.setItem('empleaia_edit_cv_id', doc.id);
       if (doc.style) {
         // Cargar estilos del CV en localStorage
@@ -141,6 +143,7 @@ export default function Drafts({ navigateTo }) {
       }
       navigateTo('/documents/cv');
     } else {
+      localStorage.removeItem('empleaia_edit_cv_id');
       localStorage.setItem('empleaia_edit_letter_id', doc.id);
       navigateTo('/documents/cover-letter');
     }
@@ -366,8 +369,9 @@ export default function Drafts({ navigateTo }) {
               {selectedDoc.type === 'cv' ? (
                 <div className="scale-[0.9] origin-top max-w-full">
                   <CVPreview
+                    profile={restoreCvDocument(selectedDoc.data)}
                     cvData={selectedDoc.data}
-                    theme={selectedDoc.style || { template: 'classic', primaryColor: 'purple', fontFamily: 'inter' }}
+                    theme={restoreCvTheme(selectedDoc.style)}
                   />
                 </div>
               ) : (

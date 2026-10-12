@@ -24,6 +24,7 @@ const {
   cvGenerateSchema,
   generatedCvJsonSchema,
   generatedCvSchema,
+  persistedCvSchema,
 } = await import('../validators/cvValidator.js');
 const { OpenAIProvider } = await import('../lib/aiProviders/OpenAIProvider.js');
 
@@ -323,7 +324,7 @@ test('generateCv: JSON inválido activa fallback, usa vacante del perfil y persi
   });
 
   assert.equal(result.cvId, 'cv-1');
-  assert.equal(generatedCvSchema.safeParse(result.cvData).success, true);
+  assert.equal(persistedCvSchema.safeParse(result.cvData).success, true);
   assert.match(aiParams.messages[1].content, /Vacante del perfil: Node\.js/);
   assert.equal(aiParams.maxTokens, 4000);
   assert.equal(aiParams.responseSchema, generatedCvJsonSchema);
@@ -383,6 +384,24 @@ test('generateCv: usa candidate_data temporal sin modificar el perfil maestro', 
   assert.doesNotMatch(prompt, /Empresa maestra/);
   assert.equal(result.cvData.headline, 'Backend Developer | Node.js');
   assert.equal(result.cvData.work_experience[0].company, 'Empresa temporal');
+});
+
+test('generateCv conserva contacto temporal, vacante vacía y contexto en el documento guardado', async () => {
+  const profile = { id: 'profile-1', first_name: 'Perfil actual', email: 'actual@example.com', target_job_description: 'Vacante del perfil', phone: '111' };
+  const db = createCvDb({ profile });
+  const candidate = {
+    personal_info: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', phone: '', location: 'Lima', linkedin: '', portfolio: '', career: 'Ingeniería', target_role: 'Backend Engineer', bio: 'Desarrolladora' },
+    skills: { technical: ['Node.js'], soft: [] }, academic_background: [], work_experience: [], certifications: []
+  };
+  assert.equal(cvGenerateSchema.safeParse({ profileId: 'profile-1', candidate_data: candidate }).success, true);
+  const result = await generateCv({ db, userId: 'profile-1', profileId: 'profile-1', candidate_data: candidate, target_job_description: '', cv_focus: 'técnico', aiGenerate: async () => JSON.stringify(emptyGeneratedCv()) });
+  assert.equal(result.cvData.personal_info.first_name, 'Ada');
+  assert.equal(result.cvData.personal_info.email, 'ada@example.com');
+  assert.equal(result.cvData.personal_info.phone, '');
+  assert.equal(result.cvData.target_job_description, '');
+  assert.equal(result.cvData.cv_focus, 'técnico');
+  profile.first_name = 'Perfil modificado después';
+  assert.equal(db.savedPayloads[0].cv_data.personal_info.first_name, 'Ada');
 });
 
 test('OpenAIProvider: usa json_schema estricto en modelos compatibles', async () => {

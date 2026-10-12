@@ -18,48 +18,26 @@ import ColorSelector from '../components/cv/ColorSelector';
 import FontSelector from '../components/cv/FontSelector';
 import SectionToggle from '../components/cv/SectionToggle';
 import CVPreview from '../components/cv/CVPreview';
+import { readStoredCvTheme } from '../utils/documentDrafts';
 
 export default function CvCustomize() {
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [cvData, setCvData] = useState(null);
-  const [userId, setUserId] = useState(null);
 
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   
   // Customizer Styles States synced with localStorage
-  const [template, setTemplate] = useState(() => localStorage.getItem('empleaia_cv_theme_template') || 'classic');
-  const [color, setColor] = useState(() => localStorage.getItem('empleaia_cv_theme_color') || 'purple');
-  const [font, setFont] = useState(() => localStorage.getItem('empleaia_cv_theme_font') || 'inter');
-  const [fontSize, setFontSize] = useState(() => localStorage.getItem('empleaia_cv_theme_fontSize') || 'normal');
-  const [spacing, setSpacing] = useState(() => localStorage.getItem('empleaia_cv_theme_spacing') || 'normal');
-  const [headerStyle, setHeaderStyle] = useState(() => localStorage.getItem('empleaia_cv_theme_headerStyle') || 'centered');
-
-  // Toggle sections synced with localStorage
-  const [visibleSections, setVisibleSections] = useState(() => {
-    const saved = localStorage.getItem('empleaia_cv_theme_visibleSections');
-    return saved ? JSON.parse(saved) : {
-      personalInfo: true,
-      phone: true,
-      email: true,
-      location: true,
-      linkedin: true,
-      portfolio: true,
-      skillsSoft: true,
-      skillsTech: true,
-      professionalSummary: true,
-      experience: true,
-      education: true,
-      projects: true
-    };
-  });
-
-  // Reordering sections synced with localStorage
-  const [sectionOrder, setSectionOrder] = useState(() => {
-    const saved = localStorage.getItem('empleaia_cv_theme_sectionOrder');
-    return saved ? JSON.parse(saved) : ['summary', 'experience', 'education', 'projects', 'skills'];
-  });
+  const [initialTheme] = useState(() => readStoredCvTheme(localStorage));
+  const [template, setTemplate] = useState(initialTheme.template);
+  const [color, setColor] = useState(initialTheme.primaryColor);
+  const [font, setFont] = useState(initialTheme.fontFamily);
+  const [fontSize, setFontSize] = useState(initialTheme.fontSize);
+  const [spacing, setSpacing] = useState(initialTheme.spacing);
+  const [headerStyle, setHeaderStyle] = useState(initialTheme.headerStyle);
+  const [visibleSections, setVisibleSections] = useState(initialTheme.visibleSections);
+  const [sectionOrder, setSectionOrder] = useState(initialTheme.sectionOrder);
 
   // Action status states
   const [downloadingCv, setDownloadingCv] = useState(false);
@@ -109,7 +87,9 @@ export default function CvCustomize() {
     primaryColor: color,
     fontSize,
     spacing,
-    headerStyle
+    headerStyle,
+    visibleSections,
+    sectionOrder
   };
 
   // Log cvTheme to console whenever parameters change
@@ -129,7 +109,6 @@ export default function CvCustomize() {
       }
 
       const uid = session.user.id;
-      setUserId(uid);
 
       try {
         const token = session?.access_token;
@@ -208,37 +187,7 @@ export default function CvCustomize() {
     setSuccessMsg('');
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      
-      const headers = {
-        'Content-Type': 'application/json'
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      // 1. Asegurar optimización por IA llamando al endpoint /cv-generate
-      const response = await fetch('http://localhost:5000/api/cv-generate', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ 
-          profileId: userId,
-          cv_style: cvTheme
-        })
-      });
-      const resData = await response.json();
-
-      if (!response.ok) {
-        throw new Error(resData.error || 'Error al generar el CV optimizado con IA.');
-      }
-
-      setCvData(resData.cvData);
-
-      // 2. Esperar a que carguen las fuentes tipográficas
-      if (document.fonts && document.fonts.ready) {
-        await document.fonts.ready;
-      }
+      if (!cvData) throw new Error('Primero genera o selecciona un CV antes de descargarlo.');
 
       // Log para validación del tema en generación de PDF
       console.log("Generando PDF con theme:", cvTheme);

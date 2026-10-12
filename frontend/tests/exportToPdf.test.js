@@ -114,7 +114,8 @@ test('exportToPdf: arroja DOM_NOT_FOUND si el elemento no existe en el DOM y no 
   }
 });
 
-test('exportToPdf: genera un blob PDF y lo descarga sin usar impresión nativa', async () => {
+test('exportToPdf: genera un blob PDF y mantiene su URL hasta iniciar la descarga', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const browser = setupBrowserMocks();
   let openCalled = false;
   let printCalled = false;
@@ -138,7 +139,9 @@ test('exportToPdf: genera un blob PDF y lo descarga sin usar impresión nativa',
     assert.equal(openCalled, false, 'window.open no debe usarse');
     assert.equal(printCalled, false, 'window.print no debe usarse');
     assert.equal(browser.createdUrls[0], pdfBlob);
-    assert.equal(browser.revoked[0], 'blob:empleaia-pdf');
+    assert.equal(browser.revoked.length, 0, 'La URL debe seguir disponible después del clic');
+    t.mock.timers.tick(60000);
+    assert.deepEqual(browser.revoked, ['blob:empleaia-pdf']);
     assert.equal(browser.appended.length, 1);
     assert.deepEqual(browser.clicks, [{ href: 'blob:empleaia-pdf', download: 'CV_Test.pdf' }]);
     assert.equal(html2pdf.calls[0][0], 'set');

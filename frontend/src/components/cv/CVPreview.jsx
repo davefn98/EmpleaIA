@@ -76,6 +76,8 @@ const normalizeSkillCategories = (rawSkills, categoryOrder = []) => {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const normalizeCvData = (profile = {}, cvData = {}) => {
+  profile = profile && typeof profile === 'object' ? profile : {};
+  cvData = cvData && typeof cvData === 'object' ? cvData : {};
   const legacyCategories = cvData.skills_categories || cvData.skill_categories;
   const hasExplicitTechnicalSkills = cvData.technical_skills !== undefined ||
     cvData.skills !== undefined || legacyCategories !== undefined;
@@ -98,11 +100,12 @@ export const normalizeCvData = (profile = {}, cvData = {}) => {
   );
 
   const rawExperience = cvData.work_experience || cvData.experience || profile.work_experience || [];
+  const rawEducation = cvData.academic_background || cvData.education || profile.academic_background || profile.education || [];
 
   return {
     headline: cvData.headline || cvData.professional_headline || cvData.target_role || profile.target_role || profile.career || '',
     professionalSummary: cvData.professional_summary || cvData.profile_summary || cvData.summary || profile.bio || '',
-    workExperience: rawExperience.map((experience) => ({
+    workExperience: (Array.isArray(rawExperience) ? rawExperience : []).filter(Boolean).map((experience) => ({
       ...experience,
       period: experience.period || (experience.start_date
         ? `${experience.start_date} - ${experience.end_date || 'Actual'}`
@@ -110,8 +113,7 @@ export const normalizeCvData = (profile = {}, cvData = {}) => {
       description: experience.impact_description || experience.description || '',
       bullets: toTextList(experience.bullets || experience.achievements)
     })),
-    education: (cvData.academic_background || cvData.education || profile.academic_background || profile.education || [])
-      .map((education) => ({
+    education: (Array.isArray(rawEducation) ? rawEducation : []).filter(Boolean).map((education) => ({
         ...education,
         period: education.period || (education.start_date
           ? `${education.start_date} - ${education.end_date || 'Actual'}`
@@ -121,7 +123,7 @@ export const normalizeCvData = (profile = {}, cvData = {}) => {
     technicalSkills: skillCategories.flatMap((category) => category.skills),
     softSkills,
     certifications: toTextList(cvData.certifications || profile.certifications),
-    projects: cvData.projects || profile.projects || []
+    projects: Array.isArray(cvData.projects ?? profile.projects) ? (cvData.projects ?? profile.projects) : []
   };
 };
 
@@ -133,13 +135,15 @@ export default function CVPreview({
   profile = {},
   cvData = null,
   theme = {},
-  sections = {},
-  sectionOrder = [],
+  sections = theme?.visibleSections || {},
+  sectionOrder = theme?.sectionOrder || [],
   // Backward compatibility
   template: legacyTemplate,
   color: legacyColor,
   font: legacyFont
 }) {
+  // A saved snapshot must not inherit contact information from today's profile.
+  profile = cvData?.personal_info || profile || {};
   // ── 1. RESOLUCIÓN DE PROPS ─────────────────────────────────
   const selectedTemplate = theme?.template || legacyTemplate || 'classic';
   const selectedColor    = theme?.primaryColor || legacyColor || 'purple';

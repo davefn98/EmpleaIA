@@ -79,6 +79,31 @@ test('normalizeCvData respeta una selección técnica explícitamente vacía', (
   assert.deepEqual(result.technicalSkills, []);
 });
 
+test('la vista de un borrador usa el contacto guardado y respeta sus secciones', () => {
+  const html = renderToStaticMarkup(React.createElement(CVPreview, {
+    profile: { first_name: 'Perfil actual', email: 'actual@example.com', phone: '999' },
+    cvData: {
+      personal_info: { first_name: 'Ada', last_name: 'Lovelace', email: 'guardado@example.com', phone: '123' },
+      professional_summary: 'Resumen guardado', work_experience: [{ company: 'Empresa guardada', role: 'Engineer' }],
+      technical_skills: { backend: ['Node.js'] }, academic_background: []
+    },
+    theme: { template: 'classic', visibleSections: { email: false, experience: false }, sectionOrder: ['skills', 'summary'] }
+  }));
+  assert.match(html, /Ada/);
+  assert.match(html, /123/);
+  assert.match(html, /Resumen guardado/);
+  assert.doesNotMatch(html, /Perfil actual|actual@example.com|guardado@example.com|Empresa guardada/);
+  assert.ok(html.indexOf('Node.js') < html.indexOf('Resumen guardado'));
+});
+
+test('colecciones históricas malformadas no dejan la pantalla del CV en blanco', () => {
+  const normalized = normalizeCvData(null, { work_experience: 'texto antiguo', academic_background: {}, projects: 'texto' });
+  assert.deepEqual(normalized.workExperience, []);
+  assert.deepEqual(normalized.education, []);
+  assert.deepEqual(normalized.projects, []);
+  assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(CVPreview, { cvData: { work_experience: 'texto antiguo', academic_background: {} } })));
+});
+
 test('las seis plantillas renderizan el contrato nuevo y los selectores usados por html2pdf', () => {
   const templates = ['classic', 'modern-sidebar', 'minimal', 'executive', 'tech', 'creative-simple'];
   const renderedTemplates = [];

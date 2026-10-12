@@ -41,6 +41,11 @@ export const letterUpdateSchema = z.object({
   status:         z.string().optional(),
   document_title: z.string().optional(),
   letter_content: z.string().optional(),
+  job_offer_text: z.string().optional(),
+  company: z.string().optional(),
+  target_role: z.string().optional(),
+  job_description: z.string().optional(),
+  tone: z.string().optional(),
 });
 
 /**

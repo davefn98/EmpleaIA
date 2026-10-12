@@ -99,7 +99,6 @@ router.put('/letter/:id', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const { id } = req.params;
-  const { status, document_title, letter_content } = parsedBody.data;
 
   let result;
   try {
@@ -107,7 +106,7 @@ router.put('/letter/:id', requireAuth, asyncHandler(async (req, res) => {
       db:     req.db,
       id,
       userId: req.user.id,
-      fields: { status, document_title, letter_content },
+      fields: parsedBody.data,
     });
   } catch (err) {
     if (err.status && err.status < 500) {
