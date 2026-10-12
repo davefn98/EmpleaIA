@@ -52,10 +52,11 @@ export async function getProfile(db, profileId) {
  * @returns {Promise<object[]>}
  */
 export async function getAcademicBackground(db, profileId) {
-  const { data } = await db
+  const { data, error } = await db
     .from('academic_background')
     .select('*')
     .eq('profile_id', profileId);
+  if (error) throw error;
   return data || [];
 }
 
@@ -67,10 +68,11 @@ export async function getAcademicBackground(db, profileId) {
  * @returns {Promise<object[]>}
  */
 export async function getWorkExperience(db, profileId) {
-  const { data } = await db
+  const { data, error } = await db
     .from('work_experience')
     .select('*')
     .eq('profile_id', profileId);
+  if (error) throw error;
   return data || [];
 }
 

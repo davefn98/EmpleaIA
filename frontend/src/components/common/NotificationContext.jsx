@@ -1,15 +1,8 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import { AlertCircle, CheckCircle2, AlertTriangle, Info, X, HelpCircle } from 'lucide-react';
+import { useState, useCallback, useEffect } from 'react';
+import { NotificationContext } from './notificationContext';
+import { AlertCircle, CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
+import ConfirmDialog from './ConfirmDialog';
 
-const NotificationContext = createContext(null);
-
-export function useNotification() {
-  const context = useContext(NotificationContext);
-  if (!context) {
-    throw new Error('useNotification debe ser utilizado dentro de un NotificationProvider');
-  }
-  return context;
-}
 
 export function NotificationProvider({ children }) {
   const [toasts, setToasts] = useState([]);
@@ -17,6 +10,11 @@ export function NotificationProvider({ children }) {
     isOpen: false,
     title: '',
     message: '',
+    confirmLabel: 'Confirmar',
+    cancelLabel: 'Cancelar',
+    variant: 'danger',
+    icon: null,
+    loading: false,
     onConfirm: null,
     onCancel: null,
   });
@@ -28,7 +26,7 @@ export function NotificationProvider({ children }) {
     setToasts((prev) => [...prev, { id, message, type, duration }]);
 
     setTimeout(() => {
-      removeToast(id);
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
     }, duration);
   }, []);
 
@@ -45,18 +43,23 @@ export function NotificationProvider({ children }) {
   };
 
   // --- LÓGICA DE CONFIRMACIÓN ---
-  const showConfirm = useCallback(({ title, message, onConfirm, onCancel }) => {
+  const showConfirm = useCallback(({ title, message, confirmLabel, cancelLabel, variant, icon, loading, onConfirm, onCancel }) => {
     setConfirmModal({
       isOpen: true,
       title: title || '¿Estás seguro?',
       message: message || 'Esta acción no se puede deshacer.',
+      confirmLabel: confirmLabel || 'Confirmar',
+      cancelLabel: cancelLabel || 'Cancelar',
+      variant: variant || 'danger',
+      icon: icon || null,
+      loading: Boolean(loading),
       onConfirm: () => {
         if (onConfirm) onConfirm();
-        closeConfirm();
+        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
       },
       onCancel: () => {
         if (onCancel) onCancel();
-        closeConfirm();
+        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
       },
     });
   }, []);
@@ -78,7 +81,18 @@ export function NotificationProvider({ children }) {
 
       {/* --- RENDERIZADOR DE MODAL DE CONFIRMACIÓN --- */}
       {confirmModal.isOpen && (
-        <ConfirmModalItem modal={confirmModal} onClose={closeConfirm} />
+        <ConfirmDialog
+          open={confirmModal.isOpen}
+          title={confirmModal.title}
+          message={confirmModal.message}
+          confirmLabel={confirmModal.confirmLabel}
+          cancelLabel={confirmModal.cancelLabel}
+          variant={confirmModal.variant}
+          icon={confirmModal.icon}
+          loading={confirmModal.loading}
+          onConfirm={confirmModal.onConfirm}
+          onCancel={confirmModal.onCancel || closeConfirm}
+        />
       )}
     </NotificationContext.Provider>
   );
@@ -160,64 +174,3 @@ function ToastItem({ toast, onClose }) {
   );
 }
 
-// --- COMPONENTE INTERNO: MODAL DE CONFIRMACIÓN ---
-function ConfirmModalItem({ modal, onClose }) {
-  const { title, message, onConfirm, onCancel } = modal;
-
-  // Cerrar presionando escape
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-
-  return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
-      {/* Fondo Oscuro con Blur */}
-      <div 
-        onClick={onCancel}
-        className="absolute inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity duration-300 animate-fade-in"
-      />
-
-      {/* Contenedor del Modal */}
-      <div className="relative w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl p-6 text-center space-y-5 animate-scale-up z-10 overflow-hidden">
-        
-        {/* Adorno de fondo */}
-        <div className="absolute top-0 left-0 w-full h-1 bg-amber-500" />
-
-        {/* Icono de Confirmación */}
-        <div className="mx-auto bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 p-3 rounded-2xl inline-flex items-center justify-center shadow-inner">
-          <HelpCircle className="h-8 w-8" />
-        </div>
-
-        {/* Textos */}
-        <div className="space-y-1.5">
-          <h3 className="text-sm font-black text-slate-900 dark:text-white leading-none">
-            {title}
-          </h3>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed px-2">
-            {message}
-          </p>
-        </div>
-
-        {/* Botones */}
-        <div className="flex gap-2.5 pt-2">
-          <button
-            onClick={onCancel}
-            className="flex-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold py-2.5 rounded-xl transition-all cursor-pointer"
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={onConfirm}
-            className="flex-1 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold py-2.5 rounded-xl shadow-md shadow-rose-600/10 hover:shadow-rose-700/20 transition-all cursor-pointer"
-          >
-            Confirmar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

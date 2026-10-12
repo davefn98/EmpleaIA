@@ -1,4 +1,3 @@
-import React from 'react';
 import { CV_FONTS } from '../../config/cvThemes';
 
 export default function FontSelector({ selected, onChange }) {

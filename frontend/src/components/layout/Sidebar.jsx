@@ -1,10 +1,9 @@
-import React from 'react';
 import NavItem from './NavItem';
 import { getActiveNavItem, navigationGroups } from './navigation';
 import Logo from './Logo';
 
 
-export default function Sidebar({ collapsed, pathname, onNavigate, onSignOut }) {
+export default function Sidebar({ collapsed, pathname, onNavigate }) {
   const activeItem = getActiveNavItem(pathname);
 
   return (

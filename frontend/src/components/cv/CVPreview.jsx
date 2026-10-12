@@ -8,6 +8,123 @@ import {
   CV_SECTION_ORDER_DEFAULT
 } from '../../config/cvThemes';
 
+const CATEGORY_LABELS = {
+  languages_and_frameworks: 'Lenguajes y frameworks',
+  tools_and_databases: 'Herramientas y bases de datos',
+  technical: 'Habilidades técnicas',
+  technologies: 'Tecnologías',
+  tools: 'Herramientas',
+  databases: 'Bases de datos',
+  backend: 'Backend',
+  cloud: 'Cloud',
+  architecture: 'Arquitectura',
+  integration: 'Integración',
+  testing: 'Testing',
+  devops: 'DevOps',
+  security: 'Seguridad',
+  frontend: 'Frontend',
+  other: 'Otras tecnologías'
+};
+
+const toTextList = (value) => {
+  if (!value) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .map((item) => typeof item === 'string'
+      ? item
+      : item?.name || item?.label || item?.skill || item?.text || '')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const normalizeSkillCategories = (rawSkills, categoryOrder = []) => {
+  if (!rawSkills) return [];
+
+  const source = rawSkills.prioritized || rawSkills.categories || rawSkills.technical || rawSkills;
+  if (Array.isArray(source)) {
+    if (source.every((item) => typeof item === 'string')) {
+      return [{ key: 'technical', label: CATEGORY_LABELS.technical, skills: toTextList(source) }];
+    }
+
+    return source
+      .map((category, index) => ({
+        key: category?.key || category?.id || category?.category || `category-${index}`,
+        label: category?.label || category?.category || category?.name || 'Habilidades técnicas',
+        priority: Number.isFinite(category?.priority) ? category.priority : index,
+        skills: toTextList(category?.items || category?.skills || category?.values || category?.technologies)
+      }))
+      .filter((category) => category.skills.length > 0)
+      .sort((a, b) => a.priority - b.priority);
+  }
+
+  if (typeof source === 'object') {
+    const priorities = new Map(categoryOrder.map((category, index) => [category, index]));
+    return Object.entries(source)
+      .filter(([key]) => !['soft_skills', 'methodologies_and_soft_skills'].includes(key))
+      .map(([key, value], index) => ({
+        key,
+        label: CATEGORY_LABELS[key] || key.replaceAll('_', ' '),
+        priority: priorities.has(key) ? priorities.get(key) : categoryOrder.length + index,
+        skills: toTextList(value)
+      }))
+      .filter((category) => category.skills.length > 0)
+      .sort((a, b) => a.priority - b.priority);
+  }
+
+  return [];
+};
+
+// eslint-disable-next-line react-refresh/only-export-components
+export const normalizeCvData = (profile = {}, cvData = {}) => {
+  const legacyCategories = cvData.skills_categories || cvData.skill_categories;
+  const hasExplicitTechnicalSkills = cvData.technical_skills !== undefined ||
+    cvData.skills !== undefined || legacyCategories !== undefined;
+  let skillCategories = normalizeSkillCategories(
+    cvData.technical_skills || cvData.skills || legacyCategories,
+    toTextList(cvData.technical_skill_order)
+  );
+  if (skillCategories.length === 0 && !hasExplicitTechnicalSkills) {
+    const profileSkills = toTextList(profile.technical_skills);
+    if (profileSkills.length > 0) {
+      skillCategories = [{ key: 'technical', label: CATEGORY_LABELS.technical, skills: profileSkills }];
+    }
+  }
+
+  const softSkills = toTextList(
+    cvData.soft_skills ||
+    cvData.skills?.soft_skills ||
+    legacyCategories?.methodologies_and_soft_skills ||
+    profile.soft_skills
+  );
+
+  const rawExperience = cvData.work_experience || cvData.experience || profile.work_experience || [];
+
+  return {
+    headline: cvData.headline || cvData.professional_headline || cvData.target_role || profile.target_role || profile.career || '',
+    professionalSummary: cvData.professional_summary || cvData.profile_summary || cvData.summary || profile.bio || '',
+    workExperience: rawExperience.map((experience) => ({
+      ...experience,
+      period: experience.period || (experience.start_date
+        ? `${experience.start_date} - ${experience.end_date || 'Actual'}`
+        : ''),
+      description: experience.impact_description || experience.description || '',
+      bullets: toTextList(experience.bullets || experience.achievements)
+    })),
+    education: (cvData.academic_background || cvData.education || profile.academic_background || profile.education || [])
+      .map((education) => ({
+        ...education,
+        period: education.period || (education.start_date
+          ? `${education.start_date} - ${education.end_date || 'Actual'}`
+          : '')
+      })),
+    skillCategories,
+    technicalSkills: skillCategories.flatMap((category) => category.skills),
+    softSkills,
+    certifications: toTextList(cvData.certifications || profile.certifications),
+    projects: cvData.projects || profile.projects || []
+  };
+};
+
 // ============================================================
 // CVPreview — Motor de renderizado unificado para todos los
 // templates del CV. Cada template tiene su propio layout real.
@@ -21,8 +138,7 @@ export default function CVPreview({
   // Backward compatibility
   template: legacyTemplate,
   color: legacyColor,
-  font: legacyFont,
-  headerStyle: legacyHeaderStyle
+  font: legacyFont
 }) {
   // ── 1. RESOLUCIÓN DE PROPS ─────────────────────────────────
   const selectedTemplate = theme?.template || legacyTemplate || 'classic';
@@ -30,8 +146,6 @@ export default function CVPreview({
   const selectedFont     = theme?.fontFamily || legacyFont || 'inter';
   const selectedFontSize  = theme?.fontSize || 'normal';
   const selectedSpacing   = theme?.spacing || 'normal';
-  const selectedHeaderStyle = theme?.headerStyle || legacyHeaderStyle || 'centered';
-
   // Audit logs requeridos
   console.log('Template renderizado en CVPreview:', selectedTemplate);
   console.log('Theme recibido en CVPreview:', theme);
@@ -52,39 +166,26 @@ export default function CVPreview({
     : CV_SECTION_ORDER_DEFAULT;
 
   // ── 3. EXTRACCIÓN Y NORMALIZACIÓN DE CONTENIDO ────────────
-  const firstName  = profile.first_name || 'Tu';
-  const lastName   = profile.last_name  || 'Nombre';
+  const firstName  = profile.first_name || '';
+  const lastName   = profile.last_name  || '';
   const email      = profile.email      || '';
   const phone      = profile.phone      || '';
   const location   = profile.location || profile.ubicacion || profile.address || profile.city || '';
-  const targetRole = profile.target_role || profile.career || 'Profesional en TI';
-
-  const rawBio     = profile.bio || 'Profesional con experiencia en desarrollo de soluciones tecnológicas y habilidades comprobadas en el campo.';
-  const summaryText = cvData?.professional_summary || rawBio;
-
-  const expList    = cvData?.work_experience || profile.work_experience || [];
-  const eduList    = cvData?.academic_background || profile.academic_background || [];
-
-  const techSkills = profile.technical_skills || [];
-  const softSkills = profile.soft_skills || [];
+  const normalizedCv = normalizeCvData(profile, cvData || {});
+  const headline    = normalizedCv.headline;
+  const summaryText = normalizedCv.professionalSummary;
+  const expList     = normalizedCv.workExperience;
+  const eduList     = normalizedCv.education;
+  const skillCategories = normalizedCv.skillCategories;
+  const techSkillsArr = normalizedCv.technicalSkills;
+  const softSkillsArr = normalizedCv.softSkills;
+  const certifications = normalizedCv.certifications;
   const linkedin   = profile.linkedin || profile.linkedIn || profile.linkedin_url || profile.linkedInUrl || '';
   const portfolio  = profile.portfolio || '';
 
-  let techSkillsArr = [...techSkills];
-  let softSkillsArr = [...softSkills];
-
-  if (cvData?.skills_categories) {
-    const cats = cvData.skills_categories;
-    const tList = [...(cats.languages_and_frameworks || []), ...(cats.tools_and_databases || [])];
-    if (tList.length > 0) techSkillsArr = tList;
-    const sListCv = cats.methodologies_and_soft_skills || [];
-    if (sListCv.length > 0) softSkillsArr = sListCv;
-  }
-
-  const techSkillsString = techSkillsArr.join(', ') || 'No declaradas';
-  const softSkillsString = softSkillsArr.join(', ') || 'No declaradas';
-
-  const projectsList = cvData?.projects || profile.projects || [];
+  const techSkillsString = techSkillsArr.join(', ');
+  const softSkillsString = softSkillsArr.join(', ');
+  const projectsList = normalizedCv.projects;
 
   // ── 4. ESTILOS BASE (inline para máxima compatibilidad con html2pdf) ──
   // La hoja debe medir exactamente el ancho A4 (210mm): html2pdf clona el nodo
@@ -124,10 +225,49 @@ export default function CVPreview({
     pageBreakAfter: 'avoid'
   };
   const SECTION_WRAPPER_GUARD = {
-    breakInside: 'avoid',
-    pageBreakInside: 'avoid',
     paddingTop: '6px'
   };
+  const SECTION_HEADER_ATTRS = {
+    className: 'pdf-section-heading',
+    'data-pdf-keep-together': 'true'
+  };
+  const experienceBreakAttrs = (experience) => {
+    const contentLength = `${experience.description || ''}${experience.bullets.join('')}`.length;
+    const isSmall = contentLength <= 360 && experience.bullets.length <= 3;
+    return {
+      className: isSmall ? 'pdf-experience pdf-keep-together' : 'pdf-experience',
+      'data-pdf-experience-size': isSmall ? 'small' : 'large',
+      ...(isSmall ? { 'data-pdf-keep-together': 'true' } : {})
+    };
+  };
+  const renderExperienceDetails = ({ experience, paragraphStyle = {}, listStyle = {}, bulletStyle = {} }) => (
+    <>
+      {experience.description && (
+        <p className={FS} style={paragraphStyle}>{experience.description}</p>
+      )}
+      {experience.bullets.length > 0 && (
+        <ul data-pdf-bullet-list="true" style={{ paddingLeft: '14px', margin: experience.description ? '4px 0 0' : '3px 0 0', ...listStyle }}>
+          {experience.bullets.map((bullet, index) => (
+            <li key={index} className={FS} style={{ marginBottom: '2px', ...bulletStyle }}>{bullet}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+  const renderTechnicalSkills = ({ style = {}, itemStyle = {} } = {}) => (
+    <div style={style}>
+      {skillCategories.length > 0 ? skillCategories.map((category) => (
+        <p key={category.key} className={FS} style={{ color: '#475569', margin: '0 0 3px', ...itemStyle }}>
+          <strong>{category.label}:</strong> {category.skills.join(', ')}
+        </p>
+      )) : <p className={FS} style={{ color: '#475569', margin: 0, ...itemStyle }}>{techSkillsString}</p>}
+      {certifications.length > 0 && (
+        <p className={FS} style={{ color: '#475569', margin: '3px 0 0', ...itemStyle }}>
+          <strong>Certificaciones:</strong> {certifications.join(', ')}
+        </p>
+      )}
+    </div>
+  );
 
   // ── 5. DISPATCH DE TEMPLATES ───────────────────────────────
   switch (selectedTemplate) {
@@ -140,7 +280,7 @@ export default function CVPreview({
       console.log('Renderizando ClassicCVTemplate');
 
       const SectionHeader = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, borderBottom: `2px solid ${COLOR}20`, marginBottom: '6px', marginTop: '18px', paddingBottom: '4px' }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, borderBottom: `2px solid ${COLOR}20`, marginBottom: '6px', marginTop: '18px', paddingBottom: '4px' }}>
           <h4 style={{ color: COLOR, fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.12em', margin: 0 }}>
             {title}
           </h4>
@@ -163,13 +303,15 @@ export default function CVPreview({
                 <SectionHeader title="Experiencia Laboral" />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {expList.map((exp, i) => (
-                    <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
-                        <span style={{ fontSize: '8px', color: '#94a3b8', fontWeight: 600 }}>{exp.period || exp.start_date}</span>
+                    <div key={i} {...experienceBreakAttrs(exp)}>
+                      <div className="pdf-experience-heading" data-pdf-keep-together="true" style={SECTION_HEADER_GUARD}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                          <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
+                          <span style={{ fontSize: '8px', color: '#94a3b8', fontWeight: 600 }}>{exp.period || exp.start_date}</span>
+                        </div>
+                        <div style={{ fontSize: '9px', color: COLOR, fontWeight: 700 }}>{exp.company}</div>
                       </div>
-                      <div style={{ fontSize: '9px', color: COLOR, fontWeight: 700 }}>{exp.company}</div>
-                      <p className={FS} style={{ color: '#475569', margin: '2px 0 0', textAlign: 'justify' }}>{exp.impact_description || exp.description}</p>
+                      {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#475569', margin: '2px 0 0', textAlign: 'justify' }, bulletStyle: { color: '#475569' } })}
                     </div>
                   ))}
                 </div>
@@ -202,7 +344,7 @@ export default function CVPreview({
                   {activeSections.skillsTech && (
                     <div>
                       <div style={{ fontSize: '8px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b', marginBottom: '3px' }}>Técnicas</div>
-                      <p className={FS} style={{ color: '#475569' }}>{techSkillsString}</p>
+                      {renderTechnicalSkills()}
                     </div>
                   )}
                   {activeSections.skillsSoft && (
@@ -244,7 +386,7 @@ export default function CVPreview({
                 {firstName} {lastName}
               </h1>
               <p style={{ fontSize: '10px', color: COLOR, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.15em', margin: '0 0 8px' }}>
-                {targetRole}
+                {headline}
               </p>
               <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px 12px', fontSize: '8.5px', color: '#64748b', fontWeight: 600 }}>
                 {contactItems.map((c, i) => (
@@ -265,7 +407,7 @@ export default function CVPreview({
             })}
           </div>
           {/* Footer */}
-          <div style={{ position: 'absolute', bottom: '16px', left: '40px', right: '40px', borderTop: '1px solid #f1f5f9', paddingTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
+          <div className="pdf-keep-together" data-pdf-keep-together="true" style={{ marginTop: '18px', borderTop: '1px solid #f1f5f9', paddingTop: '6px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
             <span>Optimizado por EmpleaIA</span>
             <span>Formato ATS — Plantilla Clásica</span>
           </div>
@@ -283,7 +425,7 @@ export default function CVPreview({
       const mainSections = activeSectionOrder.filter(s => !['skills'].includes(s));
 
       const SectionHeaderMain = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, borderBottom: `2px solid ${COLOR}30`, marginBottom: '6px', marginTop: '18px', paddingBottom: '4px' }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, borderBottom: `2px solid ${COLOR}30`, marginBottom: '6px', marginTop: '18px', paddingBottom: '4px' }}>
           <h4 style={{ color: '#0f172a', fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.12em', margin: 0 }}>{title}</h4>
         </div>
       );
@@ -303,13 +445,15 @@ export default function CVPreview({
               <div key="exp">
                 <SectionHeaderMain title="Experiencia Laboral" />
                 {expList.map((exp, i) => (
-                  <div key={i} style={{ marginBottom: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
-                      <span style={{ fontSize: '8px', color: '#94a3b8', fontWeight: 600 }}>{exp.period || exp.start_date}</span>
+                  <div key={i} {...experienceBreakAttrs(exp)} style={{ marginBottom: '8px' }}>
+                    <div className="pdf-experience-heading" data-pdf-keep-together="true" style={SECTION_HEADER_GUARD}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
+                        <span style={{ fontSize: '8px', color: '#94a3b8', fontWeight: 600 }}>{exp.period || exp.start_date}</span>
+                      </div>
+                      <div style={{ fontSize: '9px', color: COLOR, fontWeight: 700 }}>{exp.company}</div>
                     </div>
-                    <div style={{ fontSize: '9px', color: COLOR, fontWeight: 700 }}>{exp.company}</div>
-                    <p className={FS} style={{ color: '#475569', margin: '2px 0 0', textAlign: 'justify' }}>{exp.impact_description || exp.description}</p>
+                    {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#475569', margin: '2px 0 0', textAlign: 'justify' }, bulletStyle: { color: '#475569' } })}
                   </div>
                 ))}
               </div>
@@ -360,7 +504,7 @@ export default function CVPreview({
                   {firstName.charAt(0)}{lastName.charAt(0)}
                 </div>
                 <h2 style={{ fontSize: '13px', fontWeight: 900, color: '#fff', margin: '0 0 4px', lineHeight: 1.2 }}>{firstName}<br />{lastName}</h2>
-                <p style={{ fontSize: '8px', color: COLOR, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>{targetRole}</p>
+                <p style={{ fontSize: '8px', color: COLOR, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>{headline}</p>
               </div>
             )}
 
@@ -378,7 +522,7 @@ export default function CVPreview({
             {activeSections.skillsTech && (
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ fontSize: '8px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#475569', borderBottom: '1px solid #1e293b', paddingBottom: '4px', marginBottom: '8px' }}>Habilidades Técnicas</div>
-                <p style={{ fontSize: '9px', color: '#94a3b8', lineHeight: 1.6, margin: 0 }}>{techSkillsString}</p>
+                {renderTechnicalSkills({ itemStyle: { color: '#94a3b8', lineHeight: 1.6 } })}
               </div>
             )}
             {activeSections.skillsSoft && (
@@ -412,7 +556,7 @@ export default function CVPreview({
       console.log('Renderizando MinimalCVTemplate');
 
       const SectionHeader = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '10px', margin: '22px 0 8px', paddingTop: '2px' }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '10px', margin: '22px 0 8px', paddingTop: '2px' }}>
           <div style={{ width: '20px', height: '1px', backgroundColor: COLOR }} />
           <span style={{ fontSize: '8px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#94a3b8' }}>{title}</span>
           <div style={{ flex: 1, height: '1px', backgroundColor: '#f1f5f9' }} />
@@ -434,15 +578,15 @@ export default function CVPreview({
               <div key="exp">
                 <SectionHeader title="Experiencia" />
                 {expList.map((exp, i) => (
-                  <div key={i} style={{ display: 'flex', gap: '16px', marginBottom: '12px', paddingBottom: '12px', borderBottom: i < expList.length - 1 ? '1px solid #f8fafc' : 'none' }}>
-                    <div style={{ width: '80px', flexShrink: 0, textAlign: 'right' }}>
-                      <span style={{ fontSize: '8px', color: '#94a3b8', lineHeight: '1.5', display: 'block', marginTop: '2px' }}>{exp.period || exp.start_date}</span>
-                    </div>
-                    <div style={{ flex: 1 }}>
+                  <div key={i} {...experienceBreakAttrs(exp)} style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: i < expList.length - 1 ? '1px solid #f8fafc' : 'none' }}>
+                    <div className="pdf-experience-heading" data-pdf-keep-together="true" style={{ ...SECTION_HEADER_GUARD, display: 'flex', justifyContent: 'space-between', gap: '16px' }}>
+                      <div>
                       <div className={FSH} style={{ color: '#0f172a', fontWeight: 700 }}>{exp.role}</div>
                       <div style={{ fontSize: '9px', color: COLOR, fontWeight: 500, marginBottom: '4px' }}>{exp.company}</div>
-                      <p className={FS} style={{ color: '#64748b', margin: 0, textAlign: 'justify' }}>{exp.impact_description || exp.description}</p>
+                      </div>
+                      <span style={{ fontSize: '8px', color: '#94a3b8', lineHeight: '1.5', flexShrink: 0, marginTop: '2px' }}>{exp.period || exp.start_date}</span>
                     </div>
+                    {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#64748b', margin: 0, textAlign: 'justify' }, bulletStyle: { color: '#64748b' } })}
                   </div>
                 ))}
               </div>
@@ -474,7 +618,7 @@ export default function CVPreview({
                   {activeSections.skillsTech && (
                     <div>
                       <div style={{ fontSize: '8px', color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '4px' }}>Técnicas</div>
-                      <p className={FS} style={{ color: '#64748b', margin: 0 }}>{techSkillsString}</p>
+                      {renderTechnicalSkills({ itemStyle: { color: '#64748b' } })}
                     </div>
                   )}
                   {activeSections.skillsSoft && (
@@ -513,7 +657,7 @@ export default function CVPreview({
               <h1 style={{ fontSize: '28px', fontWeight: 300, color: '#0f172a', letterSpacing: '-0.02em', margin: '0 0 4px' }}>
                 <span style={{ fontWeight: 700 }}>{firstName}</span> {lastName}
               </h1>
-              <p style={{ fontSize: '11px', color: COLOR, fontWeight: 400, letterSpacing: '0.04em', margin: '0 0 12px' }}>{targetRole}</p>
+              <p style={{ fontSize: '11px', color: COLOR, fontWeight: 400, letterSpacing: '0.04em', margin: '0 0 12px' }}>{headline}</p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 20px', fontSize: '8.5px', color: '#94a3b8', fontWeight: 400 }}>
                 {contactItems.map((c, i) => <span key={i}>{c.label}</span>)}
               </div>
@@ -526,7 +670,7 @@ export default function CVPreview({
             return <div key={s} style={SECTION_WRAPPER_GUARD}>{sec}</div>;
           })}
 
-          <div style={{ position: 'absolute', bottom: '18px', right: '52px', fontSize: '7px', color: '#e2e8f0' }}>EmpleaIA · Minimalista</div>
+          <div className="pdf-keep-together" data-pdf-keep-together="true" style={{ marginTop: '18px', textAlign: 'right', fontSize: '7px', color: '#e2e8f0' }}>EmpleaIA · Minimalista</div>
         </div>
       );
     }
@@ -540,7 +684,7 @@ export default function CVPreview({
       console.log('Renderizando ExecutiveCVTemplate');
 
       const SectionHeader = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '8px', margin: '22px 0 8px', paddingTop: '2px' }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '8px', margin: '22px 0 8px', paddingTop: '2px' }}>
           <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#0f172a', whiteSpace: 'nowrap' }}>{title}</span>
           <div style={{ flex: 1, height: '2px', backgroundColor: COLOR }} />
         </div>
@@ -561,18 +705,15 @@ export default function CVPreview({
               <div key="exp">
                 <SectionHeader title="Trayectoria Profesional" />
                 {expList.map((exp, i) => (
-                  <div key={i} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < expList.length - 1 ? `1px solid ${COLOR}20` : 'none' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div className={FSH} style={{ color: '#0f172a', fontWeight: 900 }}>{exp.role}</div>
-                      <div style={{ fontSize: '8px', backgroundColor: `${COLOR}15`, color: COLOR, fontWeight: 700, padding: '2px 8px', borderRadius: '4px' }}>{exp.period || exp.start_date}</div>
+                  <div key={i} {...experienceBreakAttrs(exp)} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < expList.length - 1 ? `1px solid ${COLOR}20` : 'none' }}>
+                    <div className="pdf-experience-heading" data-pdf-keep-together="true" style={SECTION_HEADER_GUARD}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div className={FSH} style={{ color: '#0f172a', fontWeight: 900 }}>{exp.role}</div>
+                        <div style={{ fontSize: '8px', backgroundColor: `${COLOR}15`, color: COLOR, fontWeight: 700, padding: '2px 8px', borderRadius: '4px' }}>{exp.period || exp.start_date}</div>
+                      </div>
+                      <div style={{ fontSize: '9.5px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>{exp.company}</div>
                     </div>
-                    <div style={{ fontSize: '9.5px', color: '#475569', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '4px' }}>{exp.company}</div>
-                    <p className={FS} style={{ color: '#475569', margin: 0, textAlign: 'justify' }}>{exp.impact_description || exp.description}</p>
-                    {exp.achievements?.length > 0 && (
-                      <ul style={{ paddingLeft: '14px', margin: '4px 0 0', color: '#475569' }}>
-                        {exp.achievements.map((a, ai) => <li key={ai} className={FS} style={{ marginBottom: '2px' }}>{a}</li>)}
-                      </ul>
-                    )}
+                    {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#475569', margin: 0, textAlign: 'justify' }, bulletStyle: { color: '#475569' } })}
                   </div>
                 ))}
               </div>
@@ -602,7 +743,7 @@ export default function CVPreview({
                   {activeSections.skillsTech && (
                     <div style={{ padding: '8px 12px', background: `${COLOR}06`, borderRadius: '4px', borderLeft: `3px solid ${COLOR}` }}>
                       <div style={{ fontSize: '8px', fontWeight: 800, textTransform: 'uppercase', color: '#64748b', marginBottom: '4px' }}>Técnicas</div>
-                      <p className={FS} style={{ color: '#334155', margin: 0 }}>{techSkillsString}</p>
+                      {renderTechnicalSkills({ itemStyle: { color: '#334155' } })}
                     </div>
                   )}
                   {activeSections.skillsSoft && (
@@ -645,7 +786,7 @@ export default function CVPreview({
                 <h1 style={{ fontSize: '22px', fontWeight: 900, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.06em', margin: '0 0 4px' }}>
                   {firstName} {lastName}
                 </h1>
-                <p style={{ fontSize: '10px', color: '#ffffff99', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', margin: 0 }}>{targetRole}</p>
+                <p style={{ fontSize: '10px', color: '#ffffff99', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', margin: 0 }}>{headline}</p>
               </div>
               <div style={{ textAlign: 'right', fontSize: '8.5px', color: '#ffffff99', lineHeight: '1.8' }}>
                 {contactItems.map((c, i) => <div key={i}>{c.label}</div>)}
@@ -662,7 +803,7 @@ export default function CVPreview({
             })}
           </div>
 
-          <div style={{ position: 'absolute', bottom: '10px', left: '36px', right: '36px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
+          <div className="pdf-keep-together" data-pdf-keep-together="true" style={{ margin: '0 36px 10px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
             <span>Optimizado por EmpleaIA</span><span>Plantilla Ejecutiva</span>
           </div>
         </div>
@@ -678,7 +819,7 @@ export default function CVPreview({
       console.log('Renderizando TechCVTemplate');
 
       const SectionHeader = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '8px', margin: '20px 0 8px', paddingTop: '2px' }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, display: 'flex', alignItems: 'center', gap: '8px', margin: '20px 0 8px', paddingTop: '2px' }}>
           <span style={{ fontSize: '9px', color: '#94a3b8', fontFamily: 'monospace', fontWeight: 700 }}>{'// '}</span>
           <span style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#0f172a' }}>{title}</span>
         </div>
@@ -703,13 +844,15 @@ export default function CVPreview({
               <div key="exp">
                 <SectionHeader title="work_experience" />
                 {expList.map((exp, i) => (
-                  <div key={i} style={{ marginBottom: '10px', paddingLeft: '10px', borderLeft: `2px solid ${COLOR}40` }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <code style={{ fontSize: '10px', fontWeight: 700, color: COLOR, fontFamily: 'monospace' }}>{exp.role}</code>
-                      <span style={{ fontSize: '8px', color: '#64748b', fontFamily: 'monospace' }}>{exp.period || exp.start_date}</span>
+                  <div key={i} {...experienceBreakAttrs(exp)} style={{ marginBottom: '10px', paddingLeft: '10px', borderLeft: `2px solid ${COLOR}40` }}>
+                    <div className="pdf-experience-heading" data-pdf-keep-together="true" style={SECTION_HEADER_GUARD}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <code style={{ fontSize: '10px', fontWeight: 700, color: COLOR, fontFamily: 'monospace' }}>{exp.role}</code>
+                        <span style={{ fontSize: '8px', color: '#64748b', fontFamily: 'monospace' }}>{exp.period || exp.start_date}</span>
+                      </div>
+                      <div style={{ fontSize: '9px', color: '#334155', fontWeight: 600, marginBottom: '3px' }}>{exp.company}</div>
                     </div>
-                    <div style={{ fontSize: '9px', color: '#334155', fontWeight: 600, marginBottom: '3px' }}>{exp.company}</div>
-                    <p className={FS} style={{ color: '#475569', margin: 0 }}>{exp.impact_description || exp.description}</p>
+                    {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#475569', margin: 0 }, bulletStyle: { color: '#475569' } })}
                   </div>
                 ))}
               </div>
@@ -735,10 +878,20 @@ export default function CVPreview({
             return (activeSections.skillsTech || activeSections.skillsSoft) ? (
               <div key="skills">
                 <SectionHeader title="skills &amp; tools" />
-                {activeSections.skillsTech && techSkillsArr.length > 0 && (
+                {activeSections.skillsTech && (techSkillsArr.length > 0 || certifications.length > 0) && (
                   <div style={{ marginBottom: '8px' }}>
-                    <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace', fontWeight: 700, marginBottom: '4px' }}>{'// tech_stack'}</div>
-                    <div>{techSkillsArr.map((s, i) => <SkillBadge key={i} label={s} />)}</div>
+                    {skillCategories.map((category) => (
+                      <div key={category.key} style={{ marginBottom: '5px' }}>
+                        <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace', fontWeight: 700, marginBottom: '2px' }}>{`// ${category.label}`}</div>
+                        <div>{category.skills.map((skill, index) => <SkillBadge key={index} label={skill} />)}</div>
+                      </div>
+                    ))}
+                    {certifications.length > 0 && (
+                      <div style={{ marginBottom: '5px' }}>
+                        <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace', fontWeight: 700, marginBottom: '2px' }}>{'// Certificaciones'}</div>
+                        <p className={FS} style={{ color: '#475569', margin: 0 }}>{certifications.join(', ')}</p>
+                      </div>
+                    )}
                   </div>
                 )}
                 {activeSections.skillsSoft && softSkillsArr.length > 0 && (
@@ -780,18 +933,13 @@ export default function CVPreview({
         <div id="cv-sheet-a4-canvas" style={{ ...PAGE, padding: '32px' }}>
           {/* HEADER TECH */}
           {activeSections.personalInfo && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: `4px solid ${COLOR}`, paddingBottom: '16px', marginBottom: '4px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', borderBottom: `4px solid ${COLOR}`, paddingBottom: '16px', marginBottom: '4px' }}>
               <div>
                 <h1 style={{ fontSize: '22px', fontWeight: 900, color: '#0f172a', margin: '0 0 2px', letterSpacing: '-0.01em' }}>{firstName} {lastName}</h1>
-                <code style={{ fontSize: '10px', color: COLOR, fontFamily: 'monospace', fontWeight: 700 }}>&lt; {targetRole} /&gt;</code>
+                <code style={{ fontSize: '10px', color: COLOR, fontFamily: 'monospace', fontWeight: 700 }}>&lt; {headline} /&gt;</code>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: '6px', fontSize: '8.5px', color: '#64748b', fontWeight: 500 }}>
                   {contactItems.map((c, i) => <span key={i}>{c.label}</span>)}
                 </div>
-              </div>
-              {/* Status pill */}
-              <div style={{ backgroundColor: '#ecfdf5', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '8px 12px', textAlign: 'center' }}>
-                <div style={{ fontSize: '7px', fontWeight: 900, color: '#16a34a', textTransform: 'uppercase', letterSpacing: '0.1em' }}>● DISPONIBLE</div>
-                <div style={{ fontSize: '7px', color: '#4ade80', fontWeight: 600, marginTop: '1px' }}>Para contratar</div>
               </div>
             </div>
           )}
@@ -802,7 +950,7 @@ export default function CVPreview({
             return <div key={s} style={SECTION_WRAPPER_GUARD}>{sec}</div>;
           })}
 
-          <div style={{ position: 'absolute', bottom: '12px', left: '32px', right: '32px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#94a3b8', fontFamily: 'monospace' }}>
+          <div className="pdf-keep-together" data-pdf-keep-together="true" style={{ marginTop: '18px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#94a3b8', fontFamily: 'monospace' }}>
             <span>// EmpleaIA Tech Template</span><span>STATUS: SYSTEM_READY ✓</span>
           </div>
         </div>
@@ -818,7 +966,7 @@ export default function CVPreview({
       console.log('Renderizando CreativeSimpleCVTemplate');
 
       const SectionHeader = ({ title }) => (
-        <div style={{ ...SECTION_HEADER_GUARD, margin: '22px 0 8px', position: 'relative', paddingLeft: '10px', paddingTop: '2px', borderLeft: `3px solid ${COLOR}` }}>
+        <div {...SECTION_HEADER_ATTRS} style={{ ...SECTION_HEADER_GUARD, margin: '22px 0 8px', position: 'relative', paddingLeft: '10px', paddingTop: '2px', borderLeft: `3px solid ${COLOR}` }}>
           <h4 style={{ fontSize: '9px', fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#334155', margin: 0 }}>{title}</h4>
         </div>
       );
@@ -838,13 +986,15 @@ export default function CVPreview({
               <div key="exp">
                 <SectionHeader title="Experiencia" />
                 {expList.map((exp, i) => (
-                  <div key={i} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < expList.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                      <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
-                      <span style={{ fontSize: '8px', color: '#94a3b8', fontStyle: 'italic' }}>{exp.period || exp.start_date}</span>
+                  <div key={i} {...experienceBreakAttrs(exp)} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < expList.length - 1 ? '1px dashed #f1f5f9' : 'none' }}>
+                    <div className="pdf-experience-heading" data-pdf-keep-together="true" style={SECTION_HEADER_GUARD}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <span className={FSH} style={{ color: '#0f172a' }}>{exp.role}</span>
+                        <span style={{ fontSize: '8px', color: '#94a3b8', fontStyle: 'italic' }}>{exp.period || exp.start_date}</span>
+                      </div>
+                      <div style={{ fontSize: '9px', color: COLOR, fontWeight: 600, marginBottom: '3px' }}>{exp.company}</div>
                     </div>
-                    <div style={{ fontSize: '9px', color: COLOR, fontWeight: 600, marginBottom: '3px' }}>{exp.company}</div>
-                    <p className={FS} style={{ color: '#64748b', margin: 0, textAlign: 'justify' }}>{exp.impact_description || exp.description}</p>
+                    {renderExperienceDetails({ experience: exp, paragraphStyle: { color: '#64748b', margin: 0, textAlign: 'justify' }, bulletStyle: { color: '#64748b' } })}
                   </div>
                 ))}
               </div>
@@ -874,7 +1024,7 @@ export default function CVPreview({
                   {activeSections.skillsTech && (
                     <div style={{ background: `${COLOR}08`, borderRadius: '6px', padding: '8px' }}>
                       <div style={{ fontSize: '8px', fontWeight: 700, color: COLOR, textTransform: 'uppercase', marginBottom: '4px' }}>Técnicas</div>
-                      <p className={FS} style={{ color: '#334155', margin: 0 }}>{techSkillsString}</p>
+                      {renderTechnicalSkills({ itemStyle: { color: '#334155' } })}
                     </div>
                   )}
                   {activeSections.skillsSoft && (
@@ -922,7 +1072,7 @@ export default function CVPreview({
                   <h1 style={{ fontSize: '26px', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em', margin: '0 0 4px', lineHeight: 1.1 }}>
                     {firstName}<br />{lastName}
                   </h1>
-                  <p style={{ fontSize: '10px', color: COLOR, fontWeight: 600, margin: 0 }}>{targetRole}</p>
+                  <p style={{ fontSize: '10px', color: COLOR, fontWeight: 600, margin: 0 }}>{headline}</p>
                 </div>
                 <div style={{ textAlign: 'right', fontSize: '8.5px', color: '#64748b', lineHeight: '1.8' }}>
                   {contactItems.map((c, i) => <div key={i}>{c.label}</div>)}
@@ -937,7 +1087,7 @@ export default function CVPreview({
               return <div key={s} style={SECTION_WRAPPER_GUARD}>{sec}</div>;
             })}
 
-            <div style={{ position: 'absolute', bottom: '14px', left: '44px', right: '36px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
+            <div className="pdf-keep-together" data-pdf-keep-together="true" style={{ marginTop: '18px', borderTop: '1px solid #f1f5f9', paddingTop: '5px', display: 'flex', justifyContent: 'space-between', fontSize: '7px', color: '#cbd5e1' }}>
               <span>Optimizado por EmpleaIA</span><span>Plantilla Creativo Simple</span>
             </div>
           </div>

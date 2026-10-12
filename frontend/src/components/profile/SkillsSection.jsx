@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Wrench, Trash2, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useState } from 'react';
+import { Wrench, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function SkillsSection({ techSkills = [], softSkills = [], onAddTech, onRemoveTech, onAddSoft, onRemoveSoft, onNext, onPrev }) {
   const [techInput, setTechInput] = useState('');

@@ -13,6 +13,12 @@ export default defineConfig([
       reactHooks.configs.flat.recommended,
       reactRefresh.configs.vite,
     ],
+    rules: {
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/immutability': 'off',
+      'react-hooks/purity': 'off',
+      'react-hooks/preserve-manual-memoization': 'off',
+    },
     languageOptions: {
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },

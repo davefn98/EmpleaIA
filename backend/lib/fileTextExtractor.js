@@ -130,5 +130,6 @@ export async function extractCvText({ buffer, mimetype, originalname }) {
     );
   }
 
-  return text;
+  // Retain paragraph and bullet boundaries for faithful mapping and loss checks.
+  return text.replace(/\r\n?/g, '\n').replace(/\u0000/g, '').trim();
 }

@@ -10,6 +10,10 @@ import multer from 'multer';
 import { requireAuth } from '../lib/authMiddleware.js';
 import { generateWithFallbackDetailed } from '../lib/AIProviderService.js';
 import { closeInterviewSession } from '../lib/closeInterviewSession.js';
+import {
+  getHasApiKey, resolveTokens, classifyOpenAIError, TRANSCRIBE_ERROR_RESPONSES,
+  audioExtensionFromMime, buildProfileSummary, buildPriorEvalSummary, buildQAPairs, MAX_INTERVIEW_CONTEXT_CHARS, averageInterviewScore, sanitizeContentFeedback, buildFinalInterviewPrompt, getSessionTokenBudget, resolveInterviewResponseMode, withInterviewResponseMode, groundInterviewGuideMetrics, isExplicitInterviewNonAnswer
+} from '../services/interviewService.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -27,18 +31,19 @@ const MAX_QUESTIONS = 5;
 // Repreguntas de profundización: no cuentan para el total de preguntas.
 // Máximo por pregunta principal, controlado por backend.
 const MAX_FOLLOWUPS_PER_QUESTION = 1;
+const MAX_FOLLOWUPS_PER_SESSION = 2;
 
 // Presupuesto por sesión: 12000 tokens totales, 1500 reservados siempre para feedback final.
 // Si (budget - usado - reservado) < MIN_PER_CALL antes de una nueva pregunta → finalizar anticipadamente.
 // (Subido de 8000 para absorber hasta 1 repregunta por pregunta principal.)
-const TOKEN_BUDGET        = 12000;
-const RESERVED_FEEDBACK   = 1500;
+// Presupuesto variable calculado con el contexto, limitado a 120 000 tokens.
+const RESERVED_FEEDBACK   = 2000;
 const MIN_TOKENS_PER_CALL = 600;
 
 // max_tokens por tipo de llamada (limita output y por tanto el costo)
 const MAX_OUT_QUESTION = 250;
-const MAX_OUT_EVAL     = 700;
-const MAX_OUT_FINAL    = 900;
+const MAX_OUT_EVAL     = 1400;
+const MAX_OUT_FINAL    = 1800;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -59,146 +64,6 @@ const handleAudioUpload = (req, res, next) => {
     if (err) return next(err);
     next();
   });
-};
-
-const getHasApiKey = () =>
-  process.env.OPENAI_API_KEY &&
-  process.env.OPENAI_API_KEY !== 'tu-api-key-de-openai' &&
-  process.env.OPENAI_API_KEY.trim() !== '';
-
-// ~3.5 caracteres por token en español (heurística conservadora)
-const estimateTokens = (text) => Math.ceil((text || '').length / 3.5);
-
-// Extrae tokens reales del objeto usage de OpenAI, con fallback a estimación
-const resolveTokens = (usage, fallbackText) =>
-  usage?.total_tokens || estimateTokens(fallbackText);
-
-const classifyOpenAIError = (err) => {
-  const status  = err?.status || err?.response?.status;
-  const type    = err?.error?.type || err?.code || '';
-  const msg     = (err?.error?.message || err?.message || '').toLowerCase();
-
-  if (
-    status === 429 ||
-    type === 'insufficient_quota' ||
-    type === 'rate_limit_exceeded' ||
-    msg.includes('quota') ||
-    msg.includes('rate_limit') ||
-    msg.includes('billing')
-  ) {
-    return {
-      type: 'rate_limit',
-      errorCode: 'quota',
-      userMsg: 'La IA no está disponible temporalmente por límite de cuota. Intenta nuevamente más tarde.'
-    };
-  }
-  if (status === 404 || type === 'model_not_found') {
-    return { type: 'model_not_found', errorCode: 'server', userMsg: 'El modelo de IA configurado no está disponible.' };
-  }
-  if (status === 401 || type === 'invalid_api_key') {
-    return { type: 'invalid_api_key', errorCode: 'invalid_api_key', userMsg: 'La API key de OpenAI no está configurada correctamente.' };
-  }
-  if (
-    err?.name === 'APIConnectionTimeoutError' ||
-    type === 'ETIMEDOUT' ||
-    type === 'ECONNRESET' ||
-    msg.includes('timeout') ||
-    msg.includes('timed out')
-  ) {
-    return { type: 'timeout', errorCode: 'timeout', userMsg: 'La IA tardó demasiado en responder. Intenta nuevamente.' };
-  }
-  if (
-    status === 400 &&
-    (msg.includes('invalid file format') || msg.includes('unsupported') || msg.includes('could not be decoded') || msg.includes('format'))
-  ) {
-    return { type: 'unsupported_format', errorCode: 'unsupported_format', userMsg: 'El formato de audio no es compatible.' };
-  }
-  return {
-    type: 'unknown',
-    errorCode: 'server',
-    userMsg: `Error de IA (${status || 'desconocido'}): ${err?.error?.message || err?.message || 'Sin detalle.'}`
-  };
-};
-
-// Mapea la clasificación a la respuesta HTTP del endpoint de transcripción
-const TRANSCRIBE_ERROR_RESPONSES = {
-  quota:              { status: 429, error: 'No se pudo transcribir el audio. Puedes escribir tu respuesta manualmente.' },
-  invalid_api_key:    { status: 503, error: 'El servicio de voz no está configurado correctamente. Puedes continuar respondiendo por escrito.' },
-  unsupported_format: { status: 400, error: 'No pudimos procesar el formato de audio grabado. Intenta de nuevo o responde por escrito.' },
-  timeout:            { status: 504, error: 'La transcripción tardó demasiado. Intenta con una respuesta más corta o continúa por escrito.' },
-  empty_audio:         { status: 400, error: 'No se detectó audio. Intenta hablar más cerca del micrófono o responde por escrito.' },
-  file_too_large:      { status: 400, error: 'El audio es demasiado grande. Intenta grabar una respuesta más corta o responde por escrito.' },
-  server:             { status: 500, error: 'Ocurrió un problema al transcribir el audio. Puedes continuar respondiendo por escrito.' }
-};
-
-const audioExtensionFromMime = (mime = '') => {
-  if (mime.includes('ogg')) return 'ogg';
-  if (mime.includes('mp4')) return 'mp4';
-  if (mime.includes('mpeg')) return 'mp3';
-  if (mime.includes('wav')) return 'wav';
-  if (mime.includes('webm')) return 'webm';
-  return 'webm';
-};
-
-// Genera un resumen compacto del perfil (~150-200 chars, ~50 tokens)
-const buildProfileSummary = (profile) => {
-  const tech = (profile.technical_skills || []).slice(0, 5).join(', ');
-  const soft = (profile.soft_skills || []).slice(0, 3).join(', ');
-  const bio  = (profile.bio || '').slice(0, 80);
-  return [
-    `Candidato: ${profile.first_name} ${profile.last_name || ''}`.trim(),
-    `Carrera: ${profile.career}`,
-    `Puesto objetivo: ${profile.target_role}`,
-    `Tech: ${tech}`,
-    `Soft: ${soft}`,
-    bio ? `Bio: ${bio}` : ''
-  ].filter(Boolean).join('. ');
-};
-
-// Resumen compacto de evaluaciones previas (solo scores + 1 mejora por pregunta)
-const buildPriorEvalSummary = (messages) => {
-  const evaluated = messages.filter(m => m.sender === 'user' && m.evaluation?.score != null);
-  if (!evaluated.length) return '';
-  return evaluated
-    .map((m, i) => {
-      const topImprovement = (m.evaluation.improvements || [])[0] || '';
-      return `P${i + 1}: ${m.evaluation.score}/100${topImprovement ? ` (mejorar: ${topImprovement.slice(0, 60)})` : ''}`;
-    })
-    .join(' | ');
-};
-
-// Empareja mensajes IA → usuario para reconstruir pares pregunta-respuesta.
-// Las repreguntas (mensajes ai con evaluation.message_kind === 'follow_up') se
-// fusionan con el par de su pregunta principal para no contar doble en el
-// análisis final. Los mensajes ai sin metadata (entrevistas antiguas) cuentan
-// como pregunta principal.
-const buildQAPairs = (messages) => {
-  const pairs = [];
-  let currentQuestion = null;
-  let currentIsFollowUp = false;
-  for (const msg of messages) {
-    if (msg.sender === 'ai') {
-      currentQuestion = msg.message_content;
-      currentIsFollowUp = msg.evaluation?.message_kind === 'follow_up';
-    } else if (msg.sender === 'user') {
-      if (currentIsFollowUp && pairs.length > 0) {
-        const prev = pairs[pairs.length - 1];
-        prev.answer     = `${prev.answer}\n[Repregunta] ${currentQuestion}\n[Ampliación] ${msg.message_content}`;
-        prev.msgId      = msg.id;
-        prev.hasEval    = !!msg.evaluation;
-        prev.evaluation = msg.evaluation;
-      } else {
-        pairs.push({
-          question:  currentQuestion || 'Presentación inicial',
-          answer:    msg.message_content,
-          msgId:     msg.id,
-          hasEval:   !!msg.evaluation,
-          evaluation: msg.evaluation
-        });
-      }
-    }
-  }
-  return pairs;
 };
 
 // ─── Transcribir audio ─────────────────────────────────────────────────────
@@ -247,7 +112,7 @@ router.post('/interview/transcribe', requireAuth, handleAudioUpload, async (req,
         model: 'whisper-1',
         language: 'es'
       }, { timeout: 45000 });
-      console.log('[/interview/transcribe] Resultado de transcripción:', transcription.text);
+      console.log('[/interview/transcribe] Transcripción completada.');
     } catch (openaiErr) {
       console.error('[/interview/transcribe] Error completo al llamar a OpenAI:');
       console.error('- Message:', openaiErr.message);
@@ -304,9 +169,27 @@ router.post('/interview/transcribe', requireAuth, handleAudioUpload, async (req,
   }
 });
 
+const generateSessionAnalysis = async (req, interview, pairs) => {
+  const prompt = buildFinalInterviewPrompt(interview, pairs);
+  const { content, usage, provider, model } = await generateWithFallbackDetailed({
+    useCase: 'interview_feedback', messages: [{role:'system',content:SYSTEM_PROMPT_INTERVIEW_FINAL},{role:'user',content:prompt}],
+    db:req.db,userId:req.user.id,jsonMode:true,maxTokens:MAX_OUT_FINAL
+  });
+  const result = sanitizeContentFeedback(JSON.parse(content));
+  if (!result || typeof result.general_analysis !== 'string' || !Number.isFinite(result.overall_score) || result.overall_score < 0 || result.overall_score > 100 || !Array.isArray(result.recommendations) || result.recommendations.length < 3) throw new Error('La IA devolvió un análisis final inválido.');
+  return { result:{...result,ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'}, tokens:resolveTokens(usage,prompt+content) };
+};
+const persistSessionAnalysis = async (db,pairs,result) => {
+  const last = pairs.at(-1);
+  if (!last?.msgId) throw new Error('No se identificó la respuesta final guardada.');
+  const {error} = await db.from('interview_messages').update({evaluation:{...sanitizeContentFeedback(last.evaluation),session_summary:result}}).eq('id',last.msgId);
+  if(error) throw new Error('No se pudo guardar el análisis final.');
+};
+const toSessionResponses = (pairs) => pairs.map(p=>({question:p.question,response:p.answer,feedback:sanitizeContentFeedback(p.evaluation)}));
+
 // ─── POST /interview/start ─────────────────────────────────────────────────
 router.post('/interview/start', requireAuth, async (req, res) => {
-  console.log('[/interview/start] Body recibido:', req.body);
+
 
   const profileId    = req.body.profileId || req.body.userId || req.body.user_id;
   const interviewType = req.body.interviewType || req.body.interview_type;
@@ -343,6 +226,7 @@ router.post('/interview/start', requireAuth, async (req, res) => {
   if (!profile.first_name?.trim()) missing.push('nombre');
   if (!profile.career?.trim())      missing.push('carrera');
   if (!profile.target_role?.trim()) missing.push('puesto objetivo');
+  if (!profile.target_job_description?.trim()) missing.push('descripción del puesto objetivo');
   if (!profile.bio?.trim())         missing.push('resumen profesional');
   if (!(profile.technical_skills?.length)) missing.push('al menos 1 habilidad técnica');
   if (!(profile.soft_skills?.length))      missing.push('al menos 1 habilidad blanda');
@@ -351,8 +235,14 @@ router.post('/interview/start', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Completa tu perfil antes de iniciar una entrevista personalizada.', missingFields: missing });
   }
 
-  const profileSummary = buildProfileSummary(profile);
-  console.log('[/interview/start] Profile summary generado:', profileSummary);
+  const [workResult, academicResult] = await Promise.all([
+    supabaseClient.from('work_experience').select('*').eq('profile_id',profileId),
+    supabaseClient.from('academic_background').select('*').eq('profile_id',profileId)
+  ]);
+  if(workResult.error || academicResult.error) return res.status(500).json({error:'No se pudo cargar tu experiencia y formación. Reintenta antes de iniciar.'});
+  const profileSummary = withInterviewResponseMode(buildProfileSummary(profile, workResult.data || [], academicResult.data || []),req.body.responseMode === 'text' ? 'text' : 'voice');
+  if(profileSummary.length > MAX_INTERVIEW_CONTEXT_CHARS) return res.status(400).json({error:'El perfil y la descripción exceden el tamaño de contexto admitido. Ajusta la descripción sin omitir requisitos relevantes; no hemos recortado tus datos.'});
+
 
   // 3. Obtener preguntas previas del usuario para evitar repeticiones (máx 10)
   let pastQuestions = [];
@@ -435,10 +325,10 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
   let tokensUsed    = 0;
 
   console.log('[/interview/start] Modelo:', MODEL, '| Llamando a OpenAI...');
-  console.log('[/interview/start] Prompt:\n', startPrompt);
+
 
   try {
-    const { content, usage } = await generateWithFallbackDetailed({
+    const { content, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_questions',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_START },
@@ -449,10 +339,11 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
       maxTokens: MAX_OUT_QUESTION
     });
 
-    firstQuestion = content;
+    if(typeof content !== 'string' || !content.trim()) throw new Error('La IA no generó una pregunta válida.');
+    firstQuestion = content.trim();
     tokensUsed    = resolveTokens(usage, startPrompt + firstQuestion);
+    await supabaseClient.from('interviews').update({ai_provider:provider || null,ai_model:model || null}).eq('id',interview.id);
 
-    console.log('[/interview/start] Primera pregunta generada:', firstQuestion);
     console.log('[/interview/start] Tokens usados:', tokensUsed);
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
@@ -468,13 +359,13 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
   }
 
   // 6. Guardar primera pregunta y actualizar tokens en la entrevista
-  await Promise.all([
+  const startWrites = await Promise.all([
     supabaseClient.from('interview_messages').insert({
       interview_id:    interview.id,
       sender:          'ai',
       message_content: firstQuestion,
       // En mensajes 'ai' la columna evaluation se usa como metadata del mensaje
-      evaluation:      { message_kind: 'main', question_index: 1 }
+      evaluation:      { message_kind: 'main', question_index: 1, response_mode: req.body.responseMode === 'text' ? 'text' : 'voice', context_version: 'pi2-interview-v2' }
     }),
     supabaseClient
       .from('interviews')
@@ -482,6 +373,10 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
       .eq('id', interview.id)
   ]);
 
+  if(startWrites.some(result=>result.error)) {
+    await supabaseClient.from('interviews').update({status:'failed_to_start'}).eq('id',interview.id);
+    return res.status(500).json({error:'No se pudo guardar la primera pregunta. Reintenta iniciar la entrevista.'});
+  }
   return res.json({
     success:        true,
     interviewId:    interview.id,
@@ -493,14 +388,18 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
 
 // ─── POST /interview/respond ───────────────────────────────────────────────
 router.post('/interview/respond', requireAuth, async (req, res) => {
-  console.log('[/interview/respond] Body recibido:', req.body);
 
-  const { interviewId, questionText, userAnswer, gesturalData } = req.body;
+
+  const { interviewId, userAnswer } = req.body;
   const answer = userAnswer || req.body.userResponse;
+  const responseMode = req.body.responseMode === 'voice' ? 'voice' : 'text';
+  const responseTimedOut = req.body.responseTimedOut === true && answer === '[Sin respuesta: tiempo de respuesta agotado]';
 
   if (!interviewId) {
     return res.status(400).json({ error: 'Falta interviewId.' });
   }
+  if(typeof answer !== 'string') return res.status(400).json({error:'La respuesta debe ser texto.'});
+  if(answer.length > 12000) return res.status(400).json({error:'La respuesta excede el límite de 12 000 caracteres. Reduce su extensión antes de enviarla; no se ha recortado.'});
   if (!answer?.trim()) {
     return res.status(400).json({ error: 'La respuesta no puede estar vacía.' });
   }
@@ -534,8 +433,8 @@ router.post('/interview/respond', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Error al cargar historial de mensajes.' });
   }
 
-  const questionsAnswered = interview.questions_answered;
-  const tokensUsed        = interview.estimated_tokens_used;
+  const questionsAnswered = interview.questions_answered || 0;
+  const tokensUsed        = interview.estimated_tokens_used || 0;
   const profileSummary    = interview.profile_summary;
   const interviewType     = interview.interview_type;
   const difficultyLevel   = interview.difficulty_level || 'intermediate';
@@ -543,7 +442,8 @@ router.post('/interview/respond', requireAuth, async (req, res) => {
 
   // 3. Determinar la pregunta actual
   const lastAiMsg       = [...messages].reverse().find(m => m.sender === 'ai');
-  const currentQuestion = questionText || lastAiMsg?.message_content || 'Presentación inicial';
+  const currentQuestion = lastAiMsg?.message_content;
+  if(!currentQuestion) return res.status(409).json({error:'No existe una pregunta guardada para responder.'});
 
   // 3b. Contexto de repregunta: localizar la última pregunta principal y
   // contar las repreguntas posteriores. Los mensajes ai sin metadata
@@ -563,14 +463,17 @@ router.post('/interview/respond', requireAuth, async (req, res) => {
   const originalAnswer  = inFollowUpRound ? (lastUserMsg?.message_content || '') : null;
 
   // 4. Calcular presupuesto restante y decidir si es la última pregunta
-  const remainingBudget = TOKEN_BUDGET - tokensUsed - RESERVED_FEEDBACK;
+  const sessionTokenBudget = getSessionTokenBudget(profileSummary,totalQuestions);
+  const remainingBudget = sessionTokenBudget - tokensUsed - RESERVED_FEEDBACK;
   const budgetExhausted = remainingBudget < MIN_TOKENS_PER_CALL;
   const reachedMax      = questionsAnswered >= totalQuestions - 1;
   const isLastQuestion  = reachedMax || budgetExhausted;
 
   // Solo se permite repreguntar si aún no se repreguntó en esta pregunta, no es
   // la última pregunta, y queda presupuesto para la evaluación posterior.
+  const sessionFollowUps = aiMsgs.filter(m => m.evaluation?.message_kind === 'follow_up').length;
   const canFollowUp =
+    !responseTimedOut && !isExplicitInterviewNonAnswer(answer) && sessionFollowUps < MAX_FOLLOWUPS_PER_SESSION &&
     !inFollowUpRound &&
     followUpsUsed < MAX_FOLLOWUPS_PER_QUESTION &&
     !isLastQuestion &&
@@ -594,24 +497,28 @@ Repregunta disponible: ${canFollowUp
         ? 'SÍ. PUEDES devolver action "follow_up" si la respuesta es vaga o carece de ejemplos, métricas o estructura.'
         : 'NO. Evalúa y avanza con action "next_question".'}`;
 
+  const priorMainQuestions = aiMsgs.filter(m => (m.evaluation?.message_kind || 'main') === 'main').map(m => m.message_content);
   const evalPrompt = `Perfil resumido: ${profileSummary}
 Tipo de entrevista: ${interviewType}
 Nivel de dificultad: ${difficultyLevel}
+${responseTimedOut ? 'El sistema registra tiempo agotado sin respuesta. No es contenido del candidato ni demuestra falta de conocimientos; describe ausencia de respuesta, puntúa este turno con 0 y continúa sin repreguntar.' : ''}
+Formula una sola pregunta breve (máximo 45 palabras), sin repetir los temas ya abordados.
+Preguntas principales ya formuladas en esta sesión (no repetir ni reformular el mismo tema): ${JSON.stringify(priorMainQuestions)}
 ${exchangeContext}${priorEvalSummary ? `\nEvaluaciones previas (resumen): ${priorEvalSummary}` : ''}
 
 ${isLastQuestion
-    ? 'Es la ÚLTIMA pregunta de la sesión. Genera feedback final completo, marca is_finished: true y next_question: null.'
+    ? 'Es la ÚLTIMA pregunta: evalúa SOLO este intercambio, marca is_finished: true y next_question: null. Después se solicitará un análisis consolidado independiente con todos los pares.'
     : 'Si no usas follow_up, genera la siguiente pregunta para continuar la entrevista.'}`;
 
   console.log('[/interview/respond] Tokens presupuesto:', { tokensUsed, remainingBudget, isLastQuestion });
-  console.log('[/interview/respond] Prompt eval:\n', evalPrompt);
+
 
   // 6. Llamar a OpenAI
   let evalJson   = null;
   let newTokens  = 0;
 
   try {
-    const { content: raw, usage } = await generateWithFallbackDetailed({
+    const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_feedback',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_EVAL },
@@ -624,10 +531,11 @@ ${isLastQuestion
     });
 
     evalJson    = JSON.parse(raw);
+    if(evalJson.feedback) evalJson.feedback={...evalJson.feedback,ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'};
     newTokens   = resolveTokens(usage, evalPrompt + raw);
 
     console.log('[/interview/respond] Eval OpenAI OK. Tokens:', newTokens);
-    console.log('[/interview/respond] evalJson:', evalJson);
+
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
     console.error('[/interview/respond] Error OpenAI:', classified.type, apiErr.message);
@@ -638,7 +546,7 @@ ${isLastQuestion
         interview_id:    interviewId,
         sender:          'user',
         message_content: answer,
-        evaluation:      null
+        evaluation:      {response_mode:responseMode,assessment_status:'pending'}
       });
       await supabaseClient
         .from('interviews')
@@ -667,31 +575,13 @@ ${isLastQuestion
     ? 'follow_up'
     : 'next_question';
 
-  if (action === 'next_question' && !evalJson.feedback) {
-    console.warn('[/interview/respond] La IA no devolvió feedback en un turno de avance. Se degrada con comentario neutro.');
-    evalJson.feedback = {
-      score: null,
-      strengths: [],
-      improvements: [],
-      general_comment: 'Respuesta registrada. La evaluación se consolidará en el análisis final.'
-    };
+  if (responseTimedOut && evalJson.feedback) evalJson.feedback.score = 0;
+  if(action === 'next_question' && (!evalJson.feedback || !Number.isFinite(evalJson.feedback.score) || evalJson.feedback.score < 0 || evalJson.feedback.score > 100)) {
+    return res.status(502).json({error:'La IA devolvió una evaluación incompleta. Tu respuesta sigue disponible para reintentar.'});
   }
-
-  // 8. Acumular telemetría gestual (cámara web) — común a ambas ramas
-  let updatedGestural = interview.gestural_summary || {};
-  if (gesturalData) {
-    if (gesturalData.expressions) {
-      updatedGestural.expressions = updatedGestural.expressions || {};
-      for (const k in gesturalData.expressions) {
-        updatedGestural.expressions[k] = (updatedGestural.expressions[k] || 0) + gesturalData.expressions[k];
-      }
-    }
-    if (gesturalData.eyeContact) {
-      updatedGestural.eyeContact = updatedGestural.eyeContact || {};
-      for (const k in gesturalData.eyeContact) {
-        updatedGestural.eyeContact[k] = (updatedGestural.eyeContact[k] || 0) + gesturalData.eyeContact[k];
-      }
-    }
+  evalJson.feedback = evalJson.feedback ? {...groundInterviewGuideMetrics(sanitizeContentFeedback(evalJson.feedback),profileSummary,[originalAnswer,answer]),response_mode:responseMode} : null;
+  if(action === 'next_question' && !isLastQuestion && !evalJson.is_finished && !evalJson.next_question?.trim()) {
+    return res.status(502).json({error:'La IA no generó la siguiente pregunta. Reintenta; no se avanzó la sesión.'});
   }
 
   // 9. Rama de repregunta: guardar respuesta sin evaluación + repregunta de IA.
@@ -702,7 +592,7 @@ ${isLastQuestion
       interview_id:    interviewId,
       sender:          'user',
       message_content: answer,
-      evaluation:      null
+      evaluation:      {response_mode:responseMode,assessment_status:'pending'}
     });
     await supabaseClient.from('interview_messages').insert({
       interview_id:    interviewId,
@@ -713,8 +603,7 @@ ${isLastQuestion
     await supabaseClient
       .from('interviews')
       .update({
-        estimated_tokens_used: tokensUsed + newTokens,
-        gestural_summary:      updatedGestural
+        estimated_tokens_used: tokensUsed + newTokens
       })
       .eq('id', interviewId);
 
@@ -735,16 +624,16 @@ ${isLastQuestion
   const shouldFinish    = isLastQuestion || evalJson.is_finished;
   const nextQuestion    = shouldFinish ? null : evalJson.next_question;
   const finalStatus     = shouldFinish
-    ? (budgetExhausted ? 'completed_early' : 'completed')
+    ? ((budgetExhausted || questionsAnswered+1 < totalQuestions) ? 'completed_early' : 'completed')
     : 'active';
 
+  if (responseTimedOut) evalJson.feedback = { ...evalJson.feedback, score: 0, response_timed_out: true };
+
   // 11. Guardar mensaje del usuario con su evaluación
-  await supabaseClient.from('interview_messages').insert({
-    interview_id:    interviewId,
-    sender:          'user',
-    message_content: answer,
-    evaluation:      evalJson.feedback
-  });
+  const {data:savedAnswer,error:saveAnswerError} = await supabaseClient.from('interview_messages').insert({
+    interview_id:interviewId,sender:'user',message_content:answer,evaluation:evalJson.feedback
+  }).select('*').single();
+  if(saveAnswerError) return res.status(500).json({error:'No se pudo guardar tu respuesta. No se avanzó la entrevista.'});
 
   // 12. Guardar siguiente pregunta de IA si continúa
   if (!shouldFinish && nextQuestion) {
@@ -760,8 +649,7 @@ ${isLastQuestion
   const updatePayload = {
     questions_answered:     questionsAnswered + 1,
     estimated_tokens_used:  tokensUsed + newTokens,
-    status:                 finalStatus,
-    gestural_summary:       updatedGestural
+    status:                 finalStatus
   };
   if (shouldFinish) {
     updatePayload.completed_at = new Date().toISOString();
@@ -772,6 +660,20 @@ ${isLastQuestion
     .update(updatePayload)
     .eq('id', interviewId);
 
+  let sessionSummary = null;
+  const allPairs = buildQAPairs([...messages,savedAnswer]);
+  if(shouldFinish) {
+    try {
+      const analysis = await generateSessionAnalysis(req,interview,allPairs);
+      sessionSummary = analysis.result;
+      await persistSessionAnalysis(supabaseClient,allPairs,sessionSummary);
+      await supabaseClient.from('interviews').update({estimated_tokens_used:tokensUsed+newTokens+analysis.tokens}).eq('id',interviewId);
+    } catch(error) {
+      await supabaseClient.from('interviews').update({status:'pending_ai_feedback',ai_error_type:classifyOpenAIError(error).type}).eq('id',interviewId);
+      return res.status(202).json({success:false,pendingFeedback:true,interviewId,error:'Tus respuestas quedaron guardadas. El análisis final de IA está pendiente; podrás reintentarlo.'});
+    }
+  }
+
   console.log('[/interview/respond] Estado final:', finalStatus, '| Tokens acumulados:', tokensUsed + newTokens);
 
   return res.json({
@@ -781,14 +683,17 @@ ${isLastQuestion
     isFinished:   shouldFinish,
     nextQuestion,
     questionNumber: questionsAnswered + 2,
-    completedEarly: budgetExhausted && shouldFinish
+    completedEarly: finalStatus === 'completed_early',
+    sessionResponses: toSessionResponses(allPairs),
+    overallScore: averageInterviewScore(allPairs),
+    sessionSummary
   });
 });
 
 // ─── POST /interview/generate-pending-feedback ─────────────────────────────
 // Recupera respuestas guardadas de una entrevista interrumpida y genera el análisis final con IA.
 router.post('/interview/generate-pending-feedback', requireAuth, async (req, res) => {
-  console.log('[/interview/generate-pending-feedback] Body:', req.body);
+  console.log('[/interview/generate-pending-feedback] Solicitud recibida para:', req.user.id);
 
   const { interviewId } = req.body;
   if (!interviewId) {
@@ -823,27 +728,13 @@ router.post('/interview/generate-pending-feedback', requireAuth, async (req, res
     return res.status(400).json({ error: 'No hay respuestas guardadas para generar feedback.' });
   }
 
-  const profileSummary = interview.profile_summary || 'Candidato sin perfil resumido disponible.';
-  const sessionText = pairs
-    .map((p, i) => `--- Pregunta ${i + 1} ---\nPregunta: ${p.question}\nRespuesta: ${p.answer}`)
-    .join('\n\n');
-
-  const finalPrompt = `Perfil resumido: ${profileSummary}
-Tipo de entrevista: ${interview.interview_type}
-Número de respuestas registradas: ${pairs.length}
-
-${sessionText}
-
-Genera el análisis final consolidado de esta sesión.`;
-
-  console.log('[/interview/generate-pending-feedback] Llamando a OpenAI para análisis consolidado...');
-  console.log('[/interview/generate-pending-feedback] Prompt:\n', finalPrompt);
+  const finalPrompt = buildFinalInterviewPrompt(interview,pairs);
 
   let finalJson = null;
   let newTokens = 0;
 
   try {
-    const { content: raw, usage } = await generateWithFallbackDetailed({
+    const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_feedback',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_FINAL },
@@ -855,10 +746,11 @@ Genera el análisis final consolidado de esta sesión.`;
       maxTokens: MAX_OUT_FINAL
     });
 
-    finalJson = JSON.parse(raw);
+    finalJson = {...sanitizeContentFeedback(JSON.parse(raw)),ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'};
+    if(!finalJson?.general_analysis || !Number.isFinite(finalJson.overall_score) || !Array.isArray(finalJson.recommendations) || finalJson.recommendations.length < 3) throw new Error('Análisis de IA inválido.');
+    await persistSessionAnalysis(supabaseClient,pairs,finalJson);
     newTokens = resolveTokens(usage, finalPrompt + raw);
 
-    console.log('[/interview/generate-pending-feedback] Análisis generado:', finalJson);
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
     console.error('[/interview/generate-pending-feedback] Error OpenAI:', classified.type, apiErr.message);
@@ -869,7 +761,7 @@ Genera el análisis final consolidado de esta sesión.`;
   await supabaseClient
     .from('interviews')
     .update({
-      status:               'completed',
+      status: pairs.length < (interview.total_questions || MAX_QUESTIONS) ? 'completed_early' : 'completed',
       estimated_tokens_used: (interview.estimated_tokens_used || 0) + newTokens,
       completed_at:          new Date().toISOString(),
       ai_error_type:         null
@@ -887,7 +779,9 @@ Genera el análisis final consolidado de esta sesión.`;
 
   return res.json({
     success:         true,
-    overallScore:    finalJson.overall_score,
+    completedEarly: pairs.length < (interview.total_questions || MAX_QUESTIONS),
+    overallScore:    averageInterviewScore(pairs),
+    aiOverallScore: finalJson.overall_score,
     generalAnalysis: finalJson.general_analysis,
     strengths:       finalJson.strengths       || [],
     improvements:    finalJson.improvements    || [],
@@ -896,10 +790,7 @@ Genera el análisis final consolidado de esta sesión.`;
   });
 });
 
-// ─── GET /interview/active/:userId ─────────────────────────────────────────
-// Devuelve la entrevista en curso (status 'active') más reciente del usuario,
-// con sus mensajes, para poder reanudarla.
-router.get('/interview/active/:userId', requireAuth, async (req, res) => {
+const sendResumableInterview = async (req, res) => {
   const { userId } = req.params;
   const supabaseClient = req.db;
 
@@ -907,7 +798,7 @@ router.get('/interview/active/:userId', requireAuth, async (req, res) => {
     .from('interviews')
     .select('*')
     .eq('profile_id', userId)
-    .eq('status', 'active')
+    .eq('status', 'paused')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -927,6 +818,111 @@ router.get('/interview/active/:userId', requireAuth, async (req, res) => {
     .order('created_at', { ascending: true });
 
   return res.json({ success: true, activeInterview: interview, messages: messages || [] });
+};
+
+// ─── GET /interview/resumable/:userId ──────────────────────────────────────
+// Devuelve únicamente sesiones pausadas. Solo status='paused' es reanudable.
+router.get('/interview/resumable/:userId', requireAuth, sendResumableInterview);
+
+// Compatibilidad con el consumidor existente: ya no devuelve status='active'.
+router.get('/interview/active/:userId', requireAuth, sendResumableInterview);
+
+// ─── POST /interview/pause ─────────────────────────────────────────────────
+router.post('/interview/pause', requireAuth, async (req, res) => {
+  const { interviewId } = req.body;
+  if (!interviewId) {
+    return res.status(400).json({ error: 'Falta interviewId.' });
+  }
+
+  const supabaseClient = req.db;
+  const { data: interview, error: readErr } = await supabaseClient
+    .from('interviews')
+    .select('*')
+    .eq('id', interviewId)
+    .single();
+
+  if (readErr || !interview) {
+    return res.status(404).json({ error: 'Entrevista no encontrada.' });
+  }
+  if (interview.profile_id !== req.user.id) {
+    return res.status(403).json({ error: 'No tienes permiso para pausar esta entrevista.' });
+  }
+  if (interview.status === 'paused') {
+    const { data: messages } = await supabaseClient
+      .from('interview_messages')
+      .select('*')
+      .eq('interview_id', interviewId)
+      .order('created_at', { ascending: true });
+    return res.json({ success: true, interview, messages: messages || [] });
+  }
+  if (interview.status !== 'active') {
+    return res.status(400).json({ error: 'Solo se puede pausar una entrevista activa.' });
+  }
+
+  const { data: updated, error: updateErr } = await supabaseClient
+    .from('interviews')
+    .update({ status: 'paused', profile_summary:withInterviewResponseMode(interview.profile_summary,req.body.responseMode === 'text' ? 'text' : req.body.responseMode === 'voice' ? 'voice' : resolveInterviewResponseMode(interview.profile_summary) || 'voice') })
+    .eq('id', interviewId)
+    .select('*')
+    .single();
+
+  if (updateErr) {
+    console.error('[/interview/pause] Error:', updateErr.message);
+    return res.status(500).json({ error: 'No se pudo pausar la entrevista.' });
+  }
+
+  const { data: messages } = await supabaseClient
+    .from('interview_messages')
+    .select('*')
+    .eq('interview_id', interviewId)
+    .order('created_at', { ascending: true });
+
+  return res.json({ success: true, interview: updated, responseMode:resolveInterviewResponseMode(updated.profile_summary), messages: messages || [] });
+});
+
+// ─── POST /interview/resume ────────────────────────────────────────────────
+router.post('/interview/resume', requireAuth, async (req, res) => {
+  const { interviewId } = req.body;
+  if (!interviewId) {
+    return res.status(400).json({ error: 'Falta interviewId.' });
+  }
+
+  const supabaseClient = req.db;
+  const { data: interview, error: readErr } = await supabaseClient
+    .from('interviews')
+    .select('*')
+    .eq('id', interviewId)
+    .single();
+
+  if (readErr || !interview) {
+    return res.status(404).json({ error: 'Entrevista no encontrada.' });
+  }
+  if (interview.profile_id !== req.user.id) {
+    return res.status(403).json({ error: 'No tienes permiso para reanudar esta entrevista.' });
+  }
+  if (interview.status !== 'paused') {
+    return res.status(400).json({ error: 'Solo se puede reanudar una entrevista pausada.' });
+  }
+
+  const { data: updated, error: updateErr } = await supabaseClient
+    .from('interviews')
+    .update({ status: 'active' })
+    .eq('id', interviewId)
+    .select('*')
+    .single();
+
+  if (updateErr) {
+    console.error('[/interview/resume] Error:', updateErr.message);
+    return res.status(500).json({ error: 'No se pudo reanudar la entrevista.' });
+  }
+
+  const { data: messages } = await supabaseClient
+    .from('interview_messages')
+    .select('*')
+    .eq('interview_id', interviewId)
+    .order('created_at', { ascending: true });
+
+  return res.json({ success: true, interview: updated, responseMode:resolveInterviewResponseMode(updated.profile_summary), messages: messages || [] });
 });
 
 // ─── POST /interview/finish ────────────────────────────────────────────────
@@ -968,6 +964,7 @@ router.post('/interview/finish', requireAuth, async (req, res) => {
       interviewId,
       userId: req.user.id,
       action: 'finish',
+      hasAnswers: false,
       userScopedDb: supabaseClient
     });
 
@@ -978,28 +975,18 @@ router.post('/interview/finish', requireAuth, async (req, res) => {
     return res.json({
       success: true,
       discarded: true,
-      message: 'La entrevista se cerró sin respuestas, así que se descartó.'
+      finalStatus: result.finalStatus,
+      message: 'La entrevista se cerró sin respuestas suficientes para generar evaluación.'
     });
   }
 
-  const profileSummary = interview.profile_summary || 'Candidato sin perfil resumido disponible.';
-  const sessionText = pairs
-    .map((p, i) => `--- Pregunta ${i + 1} ---\nPregunta: ${p.question}\nRespuesta: ${p.answer}`)
-    .join('\n\n');
-
-  const finalPrompt = `Perfil resumido: ${profileSummary}
-Tipo de entrevista: ${interview.interview_type}
-Número de respuestas registradas: ${pairs.length}
-
-${sessionText}
-
-El candidato decidió terminar la entrevista antes de tiempo. Genera el análisis final consolidado SOLO con las respuestas registradas.`;
+  const finalPrompt = buildFinalInterviewPrompt(interview,pairs);
 
   let finalJson = null;
   let newTokens = 0;
 
   try {
-    const { content: raw, usage } = await generateWithFallbackDetailed({
+    const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_feedback',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_FINAL },
@@ -1011,7 +998,9 @@ El candidato decidió terminar la entrevista antes de tiempo. Genera el análisi
       maxTokens: MAX_OUT_FINAL
     });
 
-    finalJson = JSON.parse(raw);
+    finalJson = {...sanitizeContentFeedback(JSON.parse(raw)),ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'};
+    if(!finalJson?.general_analysis || !Number.isFinite(finalJson.overall_score) || !Array.isArray(finalJson.recommendations) || finalJson.recommendations.length < 3) throw new Error('Análisis de IA inválido.');
+    await persistSessionAnalysis(supabaseClient,pairs,finalJson);
     newTokens = resolveTokens(usage, finalPrompt + raw);
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
@@ -1033,6 +1022,7 @@ El candidato decidió terminar la entrevista antes de tiempo. Genera el análisi
     interviewId,
     userId: req.user.id,
     action: 'finish',
+    hasAnswers: true,
     userScopedDb: supabaseClient
   });
 
@@ -1059,7 +1049,8 @@ El candidato decidió terminar la entrevista antes de tiempo. Genera el análisi
   return res.json({
     success:         true,
     completedEarly:  true,
-    overallScore:    finalJson.overall_score,
+    overallScore:    averageInterviewScore(pairs),
+    aiOverallScore: finalJson.overall_score,
     generalAnalysis: finalJson.general_analysis,
     strengths:       finalJson.strengths       || [],
     improvements:    finalJson.improvements    || [],
@@ -1128,7 +1119,7 @@ router.get('/interview/list/:userId', requireAuth, async (req, res) => {
       questions_answered: i.questions_answered,
       total_questions:    i.total_questions,
       avg_score:          avg(scores),
-      avg_fluency:        avg(fluencies),
+      avg_fluency:        null,
       answers_count:      evals.length
     };
   });
@@ -1150,7 +1141,7 @@ router.get('/interview/pending/:userId', requireAuth, async (req, res) => {
 
   if (error) {
     console.error('[/interview/pending] Error:', error.message);
-    return res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: 'No se pudo completar la consulta solicitada.', code: 'QUERY_FAILED' });
   }
 
   return res.json({ success: true, pendingInterviews: data || [] });
@@ -1168,7 +1159,7 @@ router.get('/metrics/:userId', requireAuth, async (req, res) => {
     .in('status', ['completed', 'completed_early']);
 
   if (error) {
-    return res.status(400).json({ error: error.message });
+    return res.status(400).json({ error: 'No se pudo completar la consulta solicitada.', code: 'QUERY_FAILED' });
   }
 
   let totalScore    = 0;
@@ -1184,13 +1175,13 @@ router.get('/metrics/:userId', requireAuth, async (req, res) => {
     });
   });
 
-  const avgScore = evaluatedCount > 0 ? Math.round(totalScore / evaluatedCount) : 0;
+  const avgScore = evaluatedCount > 0 ? Math.round(totalScore / evaluatedCount) : null;
 
   return res.json({
     success: true,
     stats: {
       totalInterviews: interviews?.length || 0,
-      avgScore:        `${avgScore}%`,
+      avgScore:        avgScore === null ? null : `${avgScore}%`,
       streak:          0
     }
   });

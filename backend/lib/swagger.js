@@ -27,6 +27,7 @@ const options = {
             phone: { type: 'string', description: 'Número de teléfono de contacto', example: '944038550' },
             career: { type: 'string', description: 'Carrera o área de estudio técnica', example: 'Computación e Informática' },
             target_role: { type: 'string', description: 'Puesto u objetivo laboral al que postula', example: 'Líder Técnico' },
+            target_job_description: { type: 'string', nullable: true, description: 'Descripción completa de la vacante objetivo, conservada sin resumir ni transformar', example: 'Funciones:\n- Liderar el equipo técnico\n\nRequisitos:\n- React y PostgreSQL' },
             bio: { type: 'string', description: 'Resumen profesional o biografía breve', example: 'Estudiante técnico de Computación e Informática aspirando a desempeñarse como Líder Técnico.' },
             technical_skills: { type: 'array', items: { type: 'string' }, description: 'Lista de lenguajes, frameworks o tecnologías dominadas', example: ['.NET', 'React', 'SQL', 'PostgreSQL'] },
             soft_skills: { type: 'array', items: { type: 'string' }, description: 'Lista de habilidades blandas y metodologías de gestión', example: ['Scrum', 'Liderazgo', 'Trabajo en equipo'] }
@@ -79,7 +80,14 @@ const options = {
           type: 'object',
           required: ['profileId'],
           properties: {
-            profileId: { type: 'string', format: 'uuid', description: 'ID del perfil de Supabase a partir del cual generar el CV', example: '730f4e3d-804d-47df-8bf9-ae82926b457e' }
+            profileId: { type: 'string', format: 'uuid', description: 'ID del perfil de Supabase a partir del cual generar el CV', example: '730f4e3d-804d-47df-8bf9-ae82926b457e' },
+            target_job_description: { type: 'string', nullable: true, description: 'Descripción completa de la vacante usada para matching y priorización ATS' },
+            custom_target_role: { type: 'string', description: 'Puesto objetivo específico para este CV' },
+            cv_focus: { type: 'string', enum: ['ATS', 'técnico', 'ejecutivo', 'junior', 'senior'] },
+            excluded_experience_ids: { type: 'array', items: { type: 'string' } },
+            excluded_skills: { type: 'array', items: { type: 'string' } },
+            candidate_data: { type: 'object', description: 'Snapshot temporal validado del wizard. Permite generar sin modificar el CV maestro.' },
+            cv_style: { type: 'object', additionalProperties: true }
           }
         },
         GenerateCoverLetterRequest: {

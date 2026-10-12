@@ -43,3 +43,14 @@ next-env.d.ts
 # local temporary documents
 *.docx
 documento_convertido.md
+
+# Archivos locales y documentos de trabajo
+.codex/
+Actas/
+Claude.pptx
+Presentacion_Tesis_EmpleaIA.pptx
+claude_analysis.txt
+docx_outline.txt
+docx_tables.txt
+pdf_rubrica_text.txt
+backend/scratch/

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { loadUserSnapshot } from '../utils/userDataApi';
 import { apiRequest } from '../utils/api';
-import { useNotification } from '../components/common/NotificationContext';
+import { useNotification } from '../components/common/notificationContext';
 import { mapError } from '../utils/errorMapper';
 import { 
   FileText, 
@@ -17,12 +18,8 @@ import {
   AlertCircle,
   Copy,
   Check,
-  Calendar,
-  Phone,
-  UserCheck,
   Sliders,
   User,
-  Info,
   Settings,
   Briefcase,
   GraduationCap,
@@ -30,16 +27,42 @@ import {
 } from 'lucide-react';
 import CVPreview from '../components/cv/CVPreview';
 import ImportCvModal from '../components/documents/ImportCvModal';
+import { completeImportedExperience, mergeImportedPersonal } from '../utils/cvImport';
 import TemplateSelector from '../components/cv/TemplateSelector';
 import ColorSelector from '../components/cv/ColorSelector';
 import FontSelector from '../components/cv/FontSelector';
 import SectionToggle from '../components/cv/SectionToggle';
+
+const ensureItemIds = (items, prefix) => (items || []).map((item, index) => ({
+  ...item,
+  id: item.id || `${prefix}-temp-${index}-${Date.now()}-${Math.random()}`
+}));
+
+const normalizeSkillList = (skills) => {
+  if (Array.isArray(skills)) return skills.filter((skill) => typeof skill === 'string');
+  if (!skills || typeof skills !== 'object') return [];
+  return Object.values(skills)
+    .filter(Array.isArray)
+    .flat()
+    .filter((skill) => typeof skill === 'string');
+};
+
+const experienceIdentity = (experience) => JSON.stringify([
+  experience.company || '',
+  experience.role || '',
+  experience.start_date || '',
+  experience.end_date || '',
+  experience.description || ''
+]);
 
 export default function Documents({ initialDocType = 'select', navigateTo }) {
   const { toast, showConfirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  // Error al CARGAR los datos del wizard (red/servidor), distinto de "perfil incompleto"
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
   const [successMsg, setSuccessMsg] = useState('');
 
   // Estados de Tipo de Documento: 'select' | 'cv' | 'letter'
@@ -62,6 +85,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   const [cvLinkedin, setCvLinkedin] = useState('');
   const [cvCareer, setCvCareer] = useState('');
   const [cvTargetRole, setCvTargetRole] = useState('');
+  const [cvTargetJobDescription, setCvTargetJobDescription] = useState('');
   const [cvBio, setCvBio] = useState('');
 
   const [cvExperience, setCvExperience] = useState([]);
@@ -122,6 +146,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(null);
   const [isSavingProfileSection, setIsSavingProfileSection] = useState(false);
   const [saveStatusText, setSaveStatusText] = useState('');
+  const [isTemporaryCvData, setIsTemporaryCvData] = useState(false);
 
   // ==========================================
   // ESTADOS DE CARTA DE PRESENTACIÓN
@@ -144,23 +169,28 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     const loadWizardData = async () => {
       setLoading(true);
       setErrorMsg('');
+      setLoadError('');
 
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!session) {
+        setLoading(false);
+        return;
+      }
 
       const uid = session.user.id;
 
       try {
         // Cargar Perfil
-        const { data: pData, error: pError } = await supabase
-          .from('profiles')
-          .select('*, academic_background(*), work_experience(*)')
-          .eq('id', uid)
-          .single();
-
-        if (pError) throw pError;
+        const snapshot = await loadUserSnapshot(uid);
+        // Solo tras una carga exitosa se evalúa la completitud del perfil;
+        // un fallo de red/servidor cae en el catch como error de carga.
+        if (!snapshot.profile || !snapshot.profile.first_name || !snapshot.profile.career) {
+          setErrorMsg('Por favor completa tu perfil en "Mi perfil" antes de generar documentos.');
+        }
+        const pData = { ...snapshot.profile, academic_background: snapshot.academic || [], work_experience: snapshot.work || [] };
         
         if (pData) {
+          setIsTemporaryCvData(false);
           setProfile(pData);
           setCvFirstName(pData.first_name || '');
           setCvLastName(pData.last_name || '');
@@ -170,11 +200,12 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           setCvLinkedin(pData.linkedin || pData.linkedIn || pData.linkedin_url || pData.linkedInUrl || '');
           setCvCareer(pData.career || '');
           setCvTargetRole(pData.target_role || '');
+          setCvTargetJobDescription(pData.target_job_description ?? '');
           setCvBio(pData.bio || '');
           setCvTechSkills(pData.technical_skills || []);
           setCvSoftSkills(pData.soft_skills || []);
-          setCvExperience(pData.work_experience || []);
-          setCvEducation(pData.academic_background || []);
+          setCvExperience(ensureItemIds(pData.work_experience, 'exp'));
+          setCvEducation(ensureItemIds(pData.academic_background, 'edu'));
 
           setLastSavedSnapshot({
             first_name: pData.first_name || '',
@@ -183,6 +214,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
             location: pData.location || '',
             career: pData.career || '',
             target_role: pData.target_role || '',
+            target_job_description: pData.target_job_description ?? '',
             bio: pData.bio || '',
             technical_skills: pData.technical_skills || [],
             soft_skills: pData.soft_skills || [],
@@ -198,19 +230,21 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           try {
             const histCv = JSON.parse(histCvDataStr);
             if (histCv) {
-              setCvFirstName(histCv.first_name || histCv.firstName || '');
-              setCvLastName(histCv.last_name || histCv.lastName || '');
-              setCvEmail(histCv.email || '');
-              setCvPhone(histCv.phone || '');
-              setCvLocation(histCv.location || histCv.ubicacion || histCv.address || histCv.city || '');
-              setCvLinkedin(histCv.linkedin || histCv.linkedIn || histCv.linkedin_url || histCv.linkedInUrl || '');
-              setCvCareer(histCv.career || '');
-              setCvTargetRole(histCv.target_role || histCv.targetRole || '');
-              setCvBio(histCv.bio || histCv.profile_summary || histCv.summary || '');
-              setCvTechSkills(histCv.technical_skills || histCv.techSkills || []);
-              setCvSoftSkills(histCv.soft_skills || histCv.softSkills || []);
-              setCvExperience(histCv.work_experience || histCv.experience || []);
-              setCvEducation(histCv.academic_background || histCv.education || []);
+              if (histCv.first_name !== undefined || histCv.firstName !== undefined) setCvFirstName(histCv.first_name || histCv.firstName || '');
+              if (histCv.last_name !== undefined || histCv.lastName !== undefined) setCvLastName(histCv.last_name || histCv.lastName || '');
+              if (histCv.email !== undefined) setCvEmail(histCv.email || '');
+              if (histCv.phone !== undefined) setCvPhone(histCv.phone || '');
+              if (histCv.location !== undefined || histCv.ubicacion !== undefined || histCv.address !== undefined || histCv.city !== undefined) setCvLocation(histCv.location || histCv.ubicacion || histCv.address || histCv.city || '');
+              if (histCv.linkedin !== undefined || histCv.linkedIn !== undefined || histCv.linkedin_url !== undefined || histCv.linkedInUrl !== undefined) setCvLinkedin(histCv.linkedin || histCv.linkedIn || histCv.linkedin_url || histCv.linkedInUrl || '');
+              if (histCv.career !== undefined) setCvCareer(histCv.career || '');
+              if (histCv.target_role !== undefined || histCv.targetRole !== undefined) setCvTargetRole(histCv.target_role || histCv.targetRole || '');
+              if (histCv.target_job_description !== undefined) setCvTargetJobDescription(histCv.target_job_description || '');
+              if (histCv.bio !== undefined || histCv.professional_summary !== undefined || histCv.profile_summary !== undefined || histCv.summary !== undefined) setCvBio(histCv.bio || histCv.professional_summary || histCv.profile_summary || histCv.summary || '');
+              if (histCv.technical_skills !== undefined || histCv.techSkills !== undefined) setCvTechSkills(normalizeSkillList(histCv.technical_skills || histCv.techSkills));
+              if (histCv.soft_skills !== undefined || histCv.softSkills !== undefined) setCvSoftSkills(histCv.soft_skills || histCv.softSkills || []);
+              if (histCv.work_experience !== undefined || histCv.experience !== undefined) setCvExperience(ensureItemIds(histCv.work_experience || histCv.experience, 'exp'));
+              if (histCv.academic_background !== undefined || histCv.education !== undefined) setCvEducation(ensureItemIds(histCv.academic_background || histCv.education, 'edu'));
+              setIsTemporaryCvData(true);
             }
           } catch (e) {
             console.error('Error parseando historial de CV:', e);
@@ -218,23 +252,14 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         }
 
         // Cargar Cartas de Presentación previas
-        const { data: letters } = await supabase
-          .from('cover_letters')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('created_at', { ascending: false });
-
-        setPastLetters(letters || []);
+        const letters = snapshot.letters || [];
+        setPastLetters(letters);
 
         // Cargar si hay una carta seleccionada para edición desde borradores
         const editLetterId = localStorage.getItem('empleaia_edit_letter_id');
         if (editLetterId) {
           localStorage.removeItem('empleaia_edit_letter_id');
-          const { data: selLetter } = await supabase
-            .from('cover_letters')
-            .select('*')
-            .eq('id', editLetterId)
-            .single();
+          const selLetter = letters.find((letter) => letter.id === editLetterId);
           
           if (selLetter) {
             setLetterContent(selLetter.letter_content);
@@ -258,14 +283,14 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
         // Cargar si hay un CV seleccionado para edición
         const editCvId = localStorage.getItem('empleaia_edit_cv_id');
-        let cvQuery = supabase.from('generated_cvs').select('*');
+        const cvList = await apiRequest(`/documents/cvs/${uid}`, 'GET');
+        let cvs = cvList.cvs || [];
         if (editCvId) {
-          cvQuery = cvQuery.eq('id', editCvId);
+          cvs = cvs.filter((cv) => cv.id === editCvId);
           localStorage.removeItem('empleaia_edit_cv_id');
         } else {
-          cvQuery = cvQuery.eq('profile_id', uid).order('created_at', { ascending: false }).limit(1);
+          cvs = cvs.slice(0, 1);
         }
-        const { data: cvs } = await cvQuery;
 
         if (cvs && cvs.length > 0) {
           const loadedCv = cvs[0];
@@ -283,11 +308,13 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
             if (d.linkedin !== undefined) setCvLinkedin(d.linkedin || '');
             if (d.career !== undefined) setCvCareer(d.career || '');
             if (d.target_role !== undefined) setCvTargetRole(d.target_role || '');
-            if (d.bio !== undefined) setCvBio(d.bio || '');
-            if (d.technical_skills !== undefined) setCvTechSkills(d.technical_skills || []);
+            if (d.target_job_description !== undefined) setCvTargetJobDescription(d.target_job_description || '');
+            if (d.bio !== undefined || d.professional_summary !== undefined) setCvBio(d.bio || d.professional_summary || '');
+            if (d.technical_skills !== undefined) setCvTechSkills(normalizeSkillList(d.technical_skills));
             if (d.soft_skills !== undefined) setCvSoftSkills(d.soft_skills || []);
-            if (d.work_experience !== undefined) setCvExperience(d.work_experience || []);
-            if (d.academic_background !== undefined) setCvEducation(d.academic_background || []);
+            if (d.work_experience !== undefined) setCvExperience(ensureItemIds(d.work_experience, 'exp'));
+            if (d.academic_background !== undefined) setCvEducation(ensureItemIds(d.academic_background, 'edu'));
+            setIsTemporaryCvData(true);
             
             // Si tiene estilos guardados en cv_style, los restauramos
             if (loadedCv.cv_style) {
@@ -312,6 +339,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
               location: d.location || '',
               career: d.career || '',
               target_role: d.target_role || '',
+              target_job_description: d.target_job_description ?? pData.target_job_description ?? '',
               bio: d.bio || '',
               technical_skills: d.technical_skills || [],
               soft_skills: d.soft_skills || [],
@@ -323,14 +351,17 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
       } catch (err) {
         console.error('Error cargando wizard:', err);
-        setErrorMsg('Por favor completa tu perfil en "Mi perfil" antes de generar documentos.');
+        // Con sesión expirada api.js ya cerró sesión y App redirige al login.
+        if (err.code !== 'SESSION_EXPIRED') {
+          setLoadError(mapError(err));
+        }
       } finally {
         setLoading(false);
       }
     };
 
     loadWizardData();
-  }, [docType]);
+  }, [docType, reloadKey]);
 
   // Sincronizar estilo en localStorage y logs de control
   useEffect(() => {
@@ -403,6 +434,92 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     return labels[secId] || secId;
   };
 
+  const persistProfileData = async ({ persistTargetRole = true } = {}) => {
+    if (!profile?.id) throw new Error('No se encontró ID de perfil válido.');
+    if (cvEducation.some((education) => !education.start_date) || cvExperience.some((experience) => !experience.start_date)) {
+      throw new Error('Completa las fechas de inicio antes de guardar estos datos en el perfil maestro.');
+    }
+
+    const excludedCounts = new Map();
+    cvExperience
+      .filter((experience) => excludedExperienceIds.includes(experience.id))
+      .forEach((experience) => {
+        const key = experienceIdentity(experience);
+        excludedCounts.set(key, (excludedCounts.get(key) || 0) + 1);
+      });
+
+    const profilePayload = {
+      first_name: cvFirstName,
+      last_name: cvLastName,
+      phone: cvPhone,
+      location: cvLocation,
+      career: cvCareer,
+      target_role: persistTargetRole ? cvTargetRole : profile.target_role,
+      target_job_description: cvTargetJobDescription,
+      bio: cvBio,
+      technical_skills: cvTechSkills,
+      soft_skills: cvSoftSkills
+    };
+
+    await apiRequest(`/profile/${profile.id}/full`, 'PUT', {
+      profile: profilePayload,
+      academic_background: cvEducation.map((education) => ({
+        institution: education.institution,
+        degree: education.degree,
+        start_date: education.start_date,
+        end_date: education.end_date || null,
+        description: education.description || null
+      })),
+      work_experience: cvExperience.map((experience) => ({
+        company: experience.company,
+        role: experience.role,
+        start_date: experience.start_date,
+        end_date: experience.end_date || null,
+        description: experience.description || '',
+        achievements: experience.achievements || experience.bullets || []
+      }))
+    });
+
+    const refreshed = await loadUserSnapshot(profile.id);
+    const refreshedExperience = ensureItemIds(refreshed.work, 'exp');
+    const refreshedEducation = ensureItemIds(refreshed.academic, 'edu');
+    const refreshedExcludedIds = refreshedExperience.reduce((ids, experience) => {
+      const key = experienceIdentity(experience);
+      const remaining = excludedCounts.get(key) || 0;
+      if (remaining > 0) {
+        ids.push(experience.id);
+        excludedCounts.set(key, remaining - 1);
+      }
+      return ids;
+    }, []);
+
+    setProfile({
+      ...refreshed.profile,
+      work_experience: refreshedExperience,
+      academic_background: refreshedEducation
+    });
+    setCvExperience(refreshedExperience);
+    setCvEducation(refreshedEducation);
+    setExcludedExperienceIds(refreshedExcludedIds);
+    setIsTemporaryCvData(false);
+    setLastSavedSnapshot({
+      first_name: cvFirstName,
+      last_name: cvLastName,
+      phone: cvPhone,
+      location: cvLocation,
+      career: cvCareer,
+      target_role: cvTargetRole,
+      target_job_description: cvTargetJobDescription,
+      bio: cvBio,
+      technical_skills: cvTechSkills,
+      soft_skills: cvSoftSkills,
+      work_experience: refreshedExperience,
+      academic_background: refreshedEducation
+    });
+
+    return { refreshedExcludedIds };
+  };
+
   const handleSaveProfileData = async (advance = false) => {
     if (!profile?.id) {
       toast.error("No se encontró ID de perfil válido.");
@@ -410,79 +527,9 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     }
     setSavingProfileData(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      const headers = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
-      const profilePayload = {
-        first_name: cvFirstName,
-        last_name: cvLastName,
-        phone: cvPhone,
-        location: cvLocation,
-        career: cvCareer,
-        target_role: cvTargetRole,
-        bio: cvBio,
-        technical_skills: cvTechSkills,
-        soft_skills: cvSoftSkills
-      };
-      
-      const response = await fetch(`http://localhost:5000/api/profile/${profile.id}`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify(profilePayload)
-      });
-      
-      if (!response.ok) {
-        const resData = await response.json();
-        throw new Error(resData.error || 'Error al guardar el perfil.');
-      }
-      
-      // Sincronizar educación
-      await supabase.from('academic_background').delete().eq('profile_id', profile.id);
-      if (cvEducation.length > 0) {
-        const payloadEdu = cvEducation.map(edu => ({
-          profile_id: profile.id,
-          institution: edu.institution,
-          degree: edu.degree,
-          start_date: edu.start_date || new Date().toISOString().split('T')[0],
-          end_date: edu.end_date || null
-        }));
-        const { error: eduError } = await supabase.from('academic_background').insert(payloadEdu);
-        if (eduError) throw eduError;
-      }
-      
-      // Sincronizar experiencia
-      await supabase.from('work_experience').delete().eq('profile_id', profile.id);
-      if (cvExperience.length > 0) {
-        const payloadExp = cvExperience.map(exp => ({
-          profile_id: profile.id,
-          company: exp.company,
-          role: exp.role,
-          start_date: exp.start_date || new Date().toISOString().split('T')[0],
-          end_date: exp.end_date || null,
-          description: exp.description || ''
-        }));
-        const { error: expError } = await supabase.from('work_experience').insert(payloadExp);
-        if (expError) throw expError;
-      }
-      
+      await persistProfileData();
+
       toast.success("¡Datos del perfil profesional guardados con éxito!");
-      setLastSavedSnapshot({
-        first_name: cvFirstName,
-        last_name: cvLastName,
-        phone: cvPhone,
-        location: cvLocation,
-        career: cvCareer,
-        target_role: cvTargetRole,
-        bio: cvBio,
-        technical_skills: cvTechSkills,
-        soft_skills: cvSoftSkills,
-        work_experience: cvExperience,
-        academic_background: cvEducation
-      });
       if (advance) {
         setCvStep(2);
       }
@@ -503,6 +550,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       location: cvLocation,
       career: cvCareer,
       target_role: cvTargetRole,
+      target_job_description: cvTargetJobDescription,
       bio: cvBio,
       technical_skills: cvTechSkills,
       soft_skills: cvSoftSkills,
@@ -513,7 +561,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const handleEditorTabChange = async (newTabId) => {
-    if (!hasChanges() || isSavingProfileSection) {
+    if (isTemporaryCvData || !hasChanges() || isSavingProfileSection) {
       setActiveEditorTab(newTabId);
       return;
     }
@@ -522,77 +570,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     setSaveStatusText('Guardando...');
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-      const headers = { 'Content-Type': 'application/json' };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
-      const profilePayload = {
-        first_name: cvFirstName,
-        last_name: cvLastName,
-        phone: cvPhone,
-        location: cvLocation,
-        career: cvCareer,
-        target_role: cvTargetRole,
-        bio: cvBio,
-        technical_skills: cvTechSkills,
-        soft_skills: cvSoftSkills
-      };
-      
-      const response = await fetch(`http://localhost:5000/api/profile/${profile.id}`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify(profilePayload)
-      });
-      
-      if (!response.ok) {
-        const resData = await response.json();
-        throw new Error(resData.error || 'Error al guardar el perfil.');
-      }
-      
-      await supabase.from('academic_background').delete().eq('profile_id', profile.id);
-      if (cvEducation.length > 0) {
-        const payloadEdu = cvEducation.map(edu => ({
-          profile_id: profile.id,
-          institution: edu.institution,
-          degree: edu.degree,
-          start_date: edu.start_date || new Date().toISOString().split('T')[0],
-          end_date: edu.end_date || null
-        }));
-        const { error: eduError } = await supabase.from('academic_background').insert(payloadEdu);
-        if (eduError) throw eduError;
-      }
-      
-      await supabase.from('work_experience').delete().eq('profile_id', profile.id);
-      if (cvExperience.length > 0) {
-        const payloadExp = cvExperience.map(exp => ({
-          profile_id: profile.id,
-          company: exp.company,
-          role: exp.role,
-          start_date: exp.start_date || new Date().toISOString().split('T')[0],
-          end_date: exp.end_date || null,
-          description: exp.description || ''
-        }));
-        const { error: expError } = await supabase.from('work_experience').insert(payloadExp);
-        if (expError) throw expError;
-      }
-      
-      const newSnapshot = {
-        first_name: cvFirstName,
-        last_name: cvLastName,
-        phone: cvPhone,
-        location: cvLocation,
-        career: cvCareer,
-        target_role: cvTargetRole,
-        bio: cvBio,
-        technical_skills: cvTechSkills,
-        soft_skills: cvSoftSkills,
-        work_experience: cvExperience,
-        academic_background: cvEducation
-      };
-      setLastSavedSnapshot(newSnapshot);
+      await persistProfileData();
       setSaveStatusText('Cambios guardados');
       setTimeout(() => {
         setSaveStatusText('');
@@ -610,7 +588,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const addExperienceItem = () => {
-    setCvExperience([...cvExperience, { company: '', role: '', start_date: '', end_date: '', description: '', achievements: [] }]);
+    setCvExperience([...cvExperience, { id: `exp-temp-${Date.now()}-${Math.random()}`, company: '', role: '', start_date: '', end_date: '', description: '', achievements: [] }]);
   };
 
   const removeExperienceItem = (index) => {
@@ -624,7 +602,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const addEducationItem = () => {
-    setCvEducation([...cvEducation, { institution: '', degree: '', start_date: '', end_date: '' }]);
+    setCvEducation([...cvEducation, { id: `edu-temp-${Date.now()}-${Math.random()}`, institution: '', degree: '', start_date: '', end_date: '' }]);
   };
 
   const removeEducationItem = (index) => {
@@ -674,19 +652,11 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     }, 2500);
 
     try {
-      // 1. Opcionalmente actualizamos el puesto objetivo en el Perfil principal
       if (updateProfileTargetRole) {
-        const { error: pError } = await supabase
-          .from('profiles')
-          .update({
-            target_role: cvTargetRole
-          })
-          .eq('id', profile.id);
-
-        if (pError) throw pError;
+        await apiRequest(`/profile/${profile.id}`, 'PUT', { target_role: cvTargetRole });
       }
 
-      // 2. Invocar a la Capa de Negocio (Backend en Puerto 5000)
+      // Invocar a la Capa de Negocio (Backend en Puerto 5000)
       const themeConfig = {
         template,
         fontFamily: font,
@@ -702,9 +672,38 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         profileId: profile.id,
         cv_style: themeConfig,
         custom_target_role: cvTargetRole,
+        target_job_description: cvTargetJobDescription,
         cv_focus: cvFocus,
         excluded_experience_ids: excludedExperienceIds,
-        excluded_skills: excludedSkills
+        excluded_skills: excludedSkills,
+        candidate_data: {
+          personal_info: {
+            career: cvCareer,
+            target_role: cvTargetRole,
+            bio: cvBio
+          },
+          skills: {
+            technical: cvTechSkills,
+            soft: cvSoftSkills
+          },
+          academic_background: cvEducation.map((education) => ({
+            id: education.id,
+            institution: education.institution || '',
+            degree: education.degree || '',
+            start_date: education.start_date || '',
+            end_date: education.end_date || null,
+            description: education.description || ''
+          })),
+          work_experience: cvExperience.map((experience) => ({
+            id: experience.id,
+            company: experience.company || '',
+            role: experience.role || '',
+            start_date: experience.start_date || '',
+            end_date: experience.end_date || null,
+            description: experience.description || '',
+            achievements: experience.achievements || experience.bullets || []
+          }))
+        }
       });
 
       if (data.success) {
@@ -729,25 +728,34 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   // (solo llena el CV actual; el perfil del usuario no se modifica)
   const applyParsedCv = (parsed) => {
     setErrorMsg('');
-    setCvFirstName(parsed.first_name || '');
-    setCvLastName(parsed.last_name || '');
-    setCvEmail(parsed.email || '');
-    setCvPhone(parsed.phone || '');
-    setCvLocation(parsed.location || parsed.ubicacion || parsed.address || parsed.city || '');
-    setCvLinkedin(parsed.linkedin || parsed.linkedIn || parsed.linkedin_url || parsed.linkedInUrl || '');
-    setCvCareer(parsed.career || '');
-    setCvTargetRole(parsed.target_role || '');
-    setCvBio(parsed.bio || '');
-    setCvTechSkills(parsed.technical_skills || []);
-    setCvSoftSkills(parsed.soft_skills || []);
-    setCvExperience(parsed.work_experience || []);
-    setCvEducation(parsed.academic_background || []);
-
-    setSuccessMsg('¡CV importado exitosamente con IA! Todos los campos del asistente han sido autocompletados. Revísalos y continúa.');
+    const merged = mergeImportedPersonal({
+      first_name: cvFirstName, last_name: cvLastName, phone: cvPhone,
+      location: cvLocation, linkedin: cvLinkedin, career: cvCareer,
+      target_role: cvTargetRole, target_job_description: cvTargetJobDescription, bio: cvBio,
+    }, parsed);
+    setCvFirstName(merged.first_name);
+    setCvLastName(merged.last_name);
+    // The authenticated email is immutable during import.
+    setCvPhone(merged.phone);
+    setCvLocation(merged.location);
+    setCvLinkedin(merged.linkedin);
+    setCvCareer(merged.career);
+    setCvTargetRole(merged.target_role);
+    setCvTargetJobDescription(merged.target_job_description);
+    setCvBio(merged.bio);
+    if (parsed.technical_skills?.length) setCvTechSkills(normalizeSkillList(parsed.technical_skills));
+    if (parsed.soft_skills?.length) setCvSoftSkills(parsed.soft_skills);
+    if (parsed.work_experience?.length) {
+      setCvExperience(ensureItemIds(parsed.work_experience.map(completeImportedExperience), 'exp'));
+    }
+    if (parsed.academic_background?.length) setCvEducation(ensureItemIds(parsed.academic_background, 'edu'));
+    setIsTemporaryCvData(true);
+    setSuccessMsg('Datos del CV importados para revisión. Se conservaron el puesto y la vacante existentes. Tu perfil de entrevistas no cambió; para actualizarlo importa y guarda desde Mi perfil.');
   };
 
   // DESCARGAR PDF USANDO UTILIDAD UNIFICADA
   const handleDownloadPdf = async () => {
+    if (downloadingCv) return;
     setDownloadingCv(true);
     setErrorMsg('');
     try {
@@ -765,7 +773,10 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       }
     } catch (err) {
       console.error('Error descargando PDF:', err);
-      setErrorMsg('Error compilando el archivo PDF local. Por favor, vuelve a intentarlo.');
+      const errMsg = err.code === 'DOM_NOT_FOUND'
+        ? 'Error: El elemento visual del CV no se encuentra renderizado en el DOM.'
+        : 'Error compilando el archivo PDF local. Por favor, vuelve a intentarlo.';
+      setErrorMsg(errMsg);
     } finally {
       setDownloadingCv(false);
     }
@@ -815,13 +826,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
         // Recargar historial si se guardó con éxito
         if (data.letterId) {
-          const { data: letters } = await supabase
-            .from('cover_letters')
-            .select('*')
-            .eq('profile_id', profile.id)
-            .order('created_at', { ascending: false });
-          
-          setPastLetters(letters || []);
+          const refreshed = await loadUserSnapshot(profile.id);
+          setPastLetters(refreshed.letters || []);
         }
       }
     } catch (err) {
@@ -847,7 +853,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const handleDownloadLetterPdf = async () => {
-    if (!letterContent) return;
+    if (!letterContent || downloadingLetter) return;
     setDownloadingLetter(true);
     setErrorMsg('');
     try {
@@ -865,7 +871,10 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       }
     } catch (err) {
       console.error('Error descargando PDF de carta:', err);
-      setErrorMsg('Error compilando la carta en PDF local. Por favor, vuelve a intentarlo.');
+      const errMsg = err.code === 'DOM_NOT_FOUND'
+        ? 'Error: El elemento visual de la carta no se encuentra renderizado en el DOM.'
+        : 'Error compilando la carta en PDF local. Por favor, vuelve a intentarlo.';
+      setErrorMsg(errMsg);
     } finally {
       setDownloadingLetter(false);
     }
@@ -923,13 +932,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           setSuccessMsg('¡Carta de presentación guardada como borrador en la base de datos!');
           
           // Recargar historial
-          const { data: letters } = await supabase
-            .from('cover_letters')
-            .select('*')
-            .eq('profile_id', profile.id)
-            .order('created_at', { ascending: false });
-          
-          setPastLetters(letters || []);
+          const refreshed = await loadUserSnapshot(profile.id);
+          setPastLetters(refreshed.letters || []);
         } else {
           throw new Error(data.error || 'No se pudo guardar la carta como borrador.');
         }
@@ -975,12 +979,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       message: '¿Estás seguro de que deseas eliminar esta carta de presentación permanentemente?',
       onConfirm: async () => {
         try {
-          const { error } = await supabase
-            .from('cover_letters')
-            .delete()
-            .eq('id', id);
-
-          if (error) throw error;
+          await apiRequest(`/letter/${id}`, 'DELETE');
           
           toast.success('Carta de presentación eliminada correctamente.');
           setPastLetters(pastLetters.filter(l => l.id !== id));
@@ -1003,8 +1002,26 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     );
   }
 
-  const isProfileEmpty = !profile || !profile.first_name || !profile.career;
+  // No se pudieron cargar los datos del wizard: error real de red/servidor
+  if (loadError) {
+    return (
+      <div className="flex-1 min-h-full bg-slate-50 flex flex-col justify-center items-center font-sans px-4">
+        <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-4 max-w-md">
+          <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
+          <span>{loadError}</span>
+        </div>
+        <button
+          onClick={() => setReloadKey(k => k + 1)}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl cursor-pointer"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
   const liveCvData = {
+    headline: cvTargetRole,
     professional_summary: cvBio,
     work_experience: cvExperience.filter(w => !excludedExperienceIds.includes(w.id)),
     academic_background: cvEducation,
@@ -1012,7 +1029,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       languages_and_frameworks: cvTechSkills.filter(s => !excludedSkills.includes(s)),
       tools_and_databases: [],
       methodologies_and_soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
-    }
+    },
+    soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
   };
   const liveProfile = {
     ...profile,
@@ -1025,6 +1043,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     portfolio: profile?.portfolio,
     career: cvCareer,
     target_role: cvTargetRole,
+    target_job_description: cvTargetJobDescription,
     bio: cvBio,
     technical_skills: cvTechSkills,
     soft_skills: cvSoftSkills,
@@ -1341,6 +1360,17 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
                           />
                         </div>
+                        <div className="sm:col-span-2">
+                          <label htmlFor="target-job-description" className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Descripción del puesto objetivo</label>
+                          <textarea
+                            id="target-job-description"
+                            rows={5}
+                            value={cvTargetJobDescription}
+                            onChange={(e) => setCvTargetJobDescription(e.target.value)}
+                            placeholder="Pega aquí las funciones, responsabilidades, requisitos y tecnologías solicitadas en la oferta laboral."
+                            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-3 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800 leading-relaxed whitespace-pre-wrap resize-y"
+                          />
+                        </div>
                       </div>
                     )}
 
@@ -1425,7 +1455,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                 <div className="sm:col-span-2">
                                   <label className="block text-slate-500 dark:text-slate-455 text-[9px] font-bold uppercase mb-0.5">Descripción de responsabilidades</label>
                                   <textarea 
-                                    rows={2.5}
+                                    rows={6}
                                     value={exp.description || ''} 
                                     onChange={(e) => handleExperienceItemChange(index, 'description', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
@@ -2013,6 +2043,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                         <CVPreview
                           profile={liveProfile}
                           cvData={finalCvData || {
+                            headline: cvTargetRole,
                             professional_summary: cvBio,
                             work_experience: cvExperience.filter(w => !excludedExperienceIds.includes(w.id)),
                             academic_background: cvEducation,
@@ -2020,7 +2051,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                               languages_and_frameworks: cvTechSkills.filter(s => !excludedSkills.includes(s)),
                               tools_and_databases: [],
                               methodologies_and_soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
-                            }
+                            },
+                            soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
                           }}
                           theme={{
                             template,
@@ -2087,10 +2119,19 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                   <button
                     onClick={handleDownloadPdf}
                     disabled={downloadingCv}
-                    className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-6 py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-indigo-650/20 cursor-pointer"
+                    className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-6 py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-indigo-650/20 cursor-pointer disabled:opacity-50"
                   >
-                    {downloadingCv ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : <Download className="h-4.5 w-4.5" />}
-                    Descargar CV (PDF)
+                    {downloadingCv ? (
+                      <>
+                        <Loader2 className="h-4.5 w-4.5 animate-spin" />
+                        Generando PDF...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4.5 w-4.5" />
+                        Descargar CV (PDF)
+                      </>
+                    )}
                   </button>
                   <button
                     onClick={handleSaveCvDraft}
@@ -2292,8 +2333,17 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                         disabled={downloadingLetter}
                         className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer disabled:opacity-50"
                       >
-                        {downloadingLetter ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                        Descargar PDF
+                        {downloadingLetter ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Generando PDF...
+                          </>
+                        ) : (
+                          <>
+                            <Download className="h-3.5 w-3.5" />
+                            Descargar PDF
+                          </>
+                        )}
                       </button>
                       <button
                         onClick={handleSaveLetterDraft}

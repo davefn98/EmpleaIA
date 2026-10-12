@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { loadUserSnapshot } from '../utils/userDataApi';
 import { apiRequest } from '../utils/api';
 import { 
-  Sparkles, 
   Download, 
   CheckCircle, 
   Loader2, 
@@ -114,7 +114,7 @@ export default function CvCustomize() {
 
   // Log cvTheme to console whenever parameters change
   useEffect(() => {
-    console.log("Theme enviado a CVPreview:", cvTheme);
+    console.log("Theme enviado a CVPreview:", { template, fontFamily: font, primaryColor: color, fontSize, spacing, headerStyle });
   }, [template, font, color, fontSize, spacing, headerStyle]);
 
   useEffect(() => {
@@ -137,38 +137,13 @@ export default function CvCustomize() {
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
         }
-        const response = await fetch(`http://localhost:5000/api/profile/${uid}`, { headers });
-        const data = await response.json();
-
-        if (response.ok && data.profile) {
-          const { data: workData } = await supabase
-            .from('work_experience')
-            .select('*')
-            .eq('profile_id', uid)
-            .order('start_date', { ascending: false });
-
-          const { data: eduData } = await supabase
-            .from('academic_background')
-            .select('*')
-            .eq('profile_id', uid)
-            .order('start_date', { ascending: false });
-
-          setProfile({
-            ...data.profile,
-            location: data.profile.location || '',
-            work_experience: workData || [],
-            academic_background: eduData || []
-          });
+        const snapshot = await loadUserSnapshot(uid);
+        if (snapshot.profile) {
+          setProfile({ ...snapshot.profile, work_experience: snapshot.work || [], academic_background: snapshot.academic || [] });
         } else {
-          setErrorMsg('Completa tu información profesional en "Mi perfil" antes de personalizar tu CV.');
+          setErrorMsg('Completa tu informaci?n profesional en "Mi perfil" antes de personalizar tu CV.');
         }
-
-        const { data: cvs } = await supabase
-          .from('generated_cvs')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('created_at', { ascending: false })
-          .limit(1);
+        const cvs = (snapshot.cvs || []).slice(0, 1);
 
         if (cvs && cvs.length > 0) {
           setCvData(cvs[0].cv_data);

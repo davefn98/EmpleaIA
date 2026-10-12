@@ -1,11 +1,10 @@
-import React from 'react';
 import { ArrowRight, BookOpen, FileText, MessageSquare, Mail } from 'lucide-react';
 import logoImg from '../assets/logo.png';
 
 export default function Landing({ onStart }) {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans relative overflow-hidden select-none">
-      
+
       {/* Estilos CSS Inline para Animaciones Personalizadas y Efecto de Flotación */}
       <style>{`
         @keyframes float {
@@ -107,7 +106,7 @@ export default function Landing({ onStart }) {
             EmpleaIA
           </span>
         </div>
-        
+
         {/* Acciones a la derecha */}
         <div className="flex items-center gap-3">
           {/* Botón de Registro (Estilo Mockup) */}
@@ -122,12 +121,12 @@ export default function Landing({ onStart }) {
 
       {/* HERO SECTION */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-12 md:py-20 z-10 relative flex flex-col items-center text-center justify-center">
-        
+
         {/* Logotipo Centrado de la Maleta de IA (Estilo Mockup Gigante) */}
         <div className="mb-10 flex justify-center relative">
           {/* Aura de brillo de neón violeta e índigo */}
           <div className="absolute inset-[-15px] bg-gradient-to-tr from-sky-500 via-indigo-500 to-purple-600 blur-2xl rounded-full opacity-40 animate-pulse-glow pointer-events-none" />
-          
+
           <div className="relative z-10 h-64 w-64 md:h-72 md:w-72 overflow-hidden rounded-[2.5rem] shadow-2xl transition-transform duration-350 hover:scale-[1.03] select-none bg-slate-950">
             <img src={logoImg} alt="EmpleaIA Briefcase Logo" className="h-full w-full object-cover" />
           </div>
@@ -156,7 +155,7 @@ export default function Landing({ onStart }) {
 
         {/* SECCIÓN DE CARACTERÍSTICAS / CARDS */}
         <div className="mt-28 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 w-full text-left">
-          
+
           {/* Card 1: Perfil */}
           <div className="bg-slate-900/40 backdrop-blur-md border border-slate-800/60 rounded-3xl p-6 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 space-y-3">
             <div className="bg-indigo-950/40 h-10 w-10 rounded-xl flex items-center justify-center border border-indigo-900/40">

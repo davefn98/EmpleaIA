@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Sparkles } from 'lucide-react';
 import InterviewMessageBubble from './InterviewMessageBubble';
 

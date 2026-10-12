@@ -88,7 +88,9 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
     custom_target_role,
     cv_focus,
     excluded_experience_ids,
-    excluded_skills 
+    excluded_skills,
+    candidate_data,
+    target_job_description,
   } = parsed.data;
 
   // Errores de aplicación tipados (con .status) devuelven su mensaje real al
@@ -108,6 +110,8 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
       cv_focus,
       excluded_experience_ids,
       excluded_skills,
+      candidate_data,
+      target_job_description,
     });
   } catch (err) {
     if (err.status) {

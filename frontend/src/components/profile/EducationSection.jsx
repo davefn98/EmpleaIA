@@ -1,4 +1,3 @@
-import React from 'react';
 import { GraduationCap, Plus, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import EmptyState from '../common/EmptyState';
 

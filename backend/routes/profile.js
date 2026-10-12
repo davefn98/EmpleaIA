@@ -1,13 +1,10 @@
 import { Router } from 'express';
 import multer from 'multer';
-import { createRequire } from 'module';
-import mammoth from 'mammoth';
 import { requireAuth } from '../lib/authMiddleware.js';
-import { generateWithFallback } from '../lib/AIProviderService.js';
-import { SYSTEM_PROMPT_CV_IMPORT } from '../lib/prompts.js';
-
-const require = createRequire(import.meta.url);
-const pdfParse = require('pdf-parse');
+import { parseCvRaw } from '../services/cvService.js';
+import { importedCvToProfile } from '../services/cvImportData.js';
+import { extractCvText } from '../lib/fileTextExtractor.js';
+import { fullProfileUpdateSchema, profileUpdateSchema } from '../validators/profileValidator.js';
 
 const router = Router();
 
@@ -17,136 +14,36 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5 MB
 });
 
-router.post('/profile/import-cv', requireAuth, upload.single('file'), async (req, res) => {
+// Importación para revisión: comparte extracción, contrato y comprobaciones con CV.
+const importUpload = (req, res, next) => upload.single('file')(req, res, (error) => {
+  if (error) return res.status(400).json({ success: false, code: error.code,
+    error: error.code === 'LIMIT_FILE_SIZE' ? 'El archivo supera el límite de 5 MB.' : 'No se pudo recibir el archivo.' });
+  next();
+});
+
+router.post('/profile/import-cv', requireAuth, importUpload, async (req, res) => {
   try {
-    if (!req.file) {
-      console.warn('[BACKEND /profile/import-cv] No se subió ningún archivo');
-      return res.status(400).json({ error: 'No se ha proporcionado ningún archivo de CV. Asegúrate de enviar el campo "file".' });
-    }
-
-    const { mimetype, size, originalname } = req.file;
-    // Logs de propiedades del archivo (Requisito 5 de logs)
-    console.log(`[BACKEND /profile/import-cv] mimetype: ${mimetype}`);
-    console.log(`[BACKEND /profile/import-cv] originalname: ${originalname}`);
-    console.log(`[BACKEND /profile/import-cv] size: ${size} bytes`);
-
-    // 1. Validar mimetypes permitidos (Requisito 6 de validaciones)
-    const allowedMimeTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    ];
-    const extension = originalname.split('.').pop().toLowerCase();
-    
-    if (!allowedMimeTypes.includes(mimetype) && extension !== 'pdf' && extension !== 'docx') {
-      console.warn('[BACKEND /profile/import-cv] Formato no soportado:', mimetype);
-      return res.status(400).json({ error: 'Formato de archivo no soportado. Solo se permiten archivos PDF o DOCX.' });
-    }
-
-    // 2. Validar tamaño en backend (Requisito 11: Verificar que el archivo no supere 5 MB)
-    if (size > 5 * 1024 * 1024) {
-      console.warn('[BACKEND /profile/import-cv] Archivo excede el límite de 5 MB');
-      return res.status(400).json({ error: 'El archivo excede el límite permitido de 5 MB.' });
-    }
-
-    let cvText = '';
-
-    // 3. Extraer texto según tipo de archivo (Requisito 7: Si es PDF, extraer texto con pdf-parse)
-    if (mimetype === 'application/pdf' || extension === 'pdf') {
-      console.log('[BACKEND /profile/import-cv] Procesando archivo PDF...');
-      try {
-        const pdfData = await pdfParse(req.file.buffer);
-        cvText = pdfData.text;
-      } catch (pdfError) {
-        console.error('[BACKEND /profile/import-cv] Error al parsear PDF:', pdfError);
-        return res.status(422).json({ 
-          error: `No se pudo extraer texto del CV. Error al procesar el archivo PDF: ${pdfError.message || pdfError}` 
-        });
-      }
-    } else if (
-      mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || 
-      extension === 'docx'
-    ) {
-      console.log('[BACKEND /profile/import-cv] Procesando archivo DOCX...');
-      try {
-        const docxResult = await mammoth.extractRawText({ buffer: req.file.buffer });
-        cvText = docxResult.value;
-      } catch (docxError) {
-        console.error('[BACKEND /profile/import-cv] Error al parsear DOCX:', docxError);
-        return res.status(422).json({ 
-          error: `No se pudo extraer texto del CV. Error al procesar el archivo DOCX: ${docxError.message || docxError}` 
-        });
-      }
-    }
-
-    // Log temporal del texto extraído length (Requisito 5 de logs)
-    console.log(`[BACKEND /profile/import-cv] texto extraído length: ${cvText ? cvText.length : 0}`);
-
-    // 4. Validar longitud del texto extraído (Requisito 8 y 9)
-    if (!cvText || cvText.trim().length <= 100) {
-      console.warn('[BACKEND /profile/import-cv] Texto extraído es demasiado corto o no se pudo extraer');
-      return res.status(422).json({ 
-        error: 'No se pudo extraer texto del CV. El archivo subido parece no contener texto legible o tiene menos de 100 caracteres. Asegúrate de que no sea una imagen escaneada.' 
-      });
-    }
-
-    // 5. Estructurar el CV con IA (BYOK: usa la key del usuario o cae al servidor)
-    try {
-      const extractedDataText = await generateWithFallback({
-        useCase: 'cv_generation',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT_CV_IMPORT },
-          { role: 'user', content: `Texto CV:\n${cvText}` }
-        ],
-        db: req.db,
-        userId: req.user.id,
-        jsonMode: true,
-        maxTokens: 1500
-      });
-
-      const parsedData = JSON.parse(extractedDataText);
-      return res.json({
-        success: true,
-        data: parsedData
-      });
-
-    } catch (aiError) {
-      console.error('[BACKEND /profile/import-cv] Error al estructurar el CV con IA:', aiError.message);
-      return res.status(502).json({ error: 'No se pudo estructurar el CV con IA. Verifica tu API key o inténtalo de nuevo.' });
-    }
-
+    if (!req.file) return res.status(400).json({ success: false, code: 'BAD_REQUEST', error: 'Adjunta un CV en PDF, DOCX o TXT.' });
+    const cvText = await extractCvText(req.file);
+    const { parsedData } = await parseCvRaw({ db: req.db, userId: req.user.id, cvText });
+    return res.json({ success: true, data: importedCvToProfile(parsedData) });
   } catch (error) {
-    console.error('[BACKEND /profile/import-cv] Error crítico:', error);
-    return res.status(500).json({ error: 'Error interno del servidor' });
+    return res.status(error.status || 500).json({ success: false, code: error.code || 'CV_IMPORT_FAILED',
+      error: error.status ? error.message : 'No se pudo importar el CV. No se guardó ningún dato.' });
   }
 });
 
-// POST /profile/import-text
-// Importa un perfil a partir de TEXTO pegado (por ejemplo, copiado desde la
-// página de perfil de LinkedIn). Reusa el mismo extractor que import-cv (HU05).
 router.post('/profile/import-text', requireAuth, async (req, res) => {
-  const { cvText } = req.body;
-  if (!cvText || cvText.trim().length < 50) {
-    return res.status(400).json({ error: 'Pega el texto de tu perfil (mínimo ~50 caracteres).' });
+  const cvText = req.body?.cvText;
+  if (typeof cvText !== 'string' || cvText.trim().length < 50) {
+    return res.status(400).json({ success: false, code: 'TEXT_TOO_SHORT', error: 'Pega el texto completo de tu perfil (mínimo 50 caracteres).' });
   }
-
   try {
-    const extractedDataText = await generateWithFallback({
-      useCase: 'cv_generation',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT_CV_IMPORT },
-        { role: 'user', content: `Texto del perfil:\n${cvText}` }
-      ],
-      db: req.db,
-      userId: req.user.id,
-      jsonMode: true,
-      maxTokens: 1500
-    });
-
-    const parsedData = JSON.parse(extractedDataText);
-    return res.json({ success: true, data: parsedData });
-  } catch (aiError) {
-    console.error('[/profile/import-text] Error:', aiError.message);
-    return res.status(502).json({ error: 'No se pudo estructurar el texto con IA. Inténtalo de nuevo.' });
+    const { parsedData } = await parseCvRaw({ db: req.db, userId: req.user.id, cvText });
+    return res.json({ success: true, data: importedCvToProfile(parsedData) });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, code: error.code || 'CV_IMPORT_FAILED',
+      error: error.status ? error.message : 'No se pudo importar el texto. No se guardó ningún dato.' });
   }
 });
 
@@ -177,7 +74,7 @@ router.get('/profile/:userId', requireAuth, async (req, res) => {
 
 // PUT /profile/:userId
 router.put('/profile/:userId', requireAuth, async (req, res) => {
-  console.log('[BACKEND PUT /profile/:userId] Params:', req.params, 'Body:', req.body);
+  console.log('[BACKEND PUT /profile/:userId] Actualizando perfil:', req.params.userId);
   try {
     const { userId } = req.params;
     const supabaseClient = req.db;
@@ -207,6 +104,27 @@ router.put('/profile/:userId', requireAuth, async (req, res) => {
     console.error('[BACKEND PUT /profile/:userId] Error:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
   }
+});
+
+router.put('/profile/:userId/full', requireAuth, async (req, res) => {
+  const parsed = fullProfileUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    console.error('[PUT /profile/:userId/full] Error de validación Zod:', JSON.stringify(parsed.error.errors, null, 2));
+    return res.status(400).json({
+      success: false,
+      code: 'VALIDATION_ERROR',
+      error: 'Los datos profesionales no son válidos.',
+      details: parsed.error.errors
+    });
+  }
+  const { data, error } = await req.db.rpc('replace_current_user_profile_data', {
+    p_profile: parsed.data.profile, p_academic: parsed.data.academic_background, p_work: parsed.data.work_experience,
+  });
+  if (error) {
+    console.error('[PUT /profile/:userId/full] Error transaccional:', error);
+    return res.status(500).json({ success: false, code: 'PROFILE_UPDATE_FAILED', error: 'No se pudieron guardar los datos profesionales.' });
+  }
+  return res.json({ success: true, profile: data });
 });
 
 export default router;

@@ -1,4 +1,3 @@
-import React from 'react';
 import { Mic, Square, MessageSquare, Pause, CheckCircle2, X, Send, Loader2, Sparkles } from 'lucide-react';
 
 const formatTime = (seconds) => {
@@ -17,6 +16,8 @@ export default function InterviewChatInput({
   onChange,
   placeholder,
   isTextMode,
+  autoVoiceEnabled = false,
+  timeRemaining = 120,
   onToggleTextMode,
   isRecording,
   onToggleRecording,
@@ -46,6 +47,7 @@ export default function InterviewChatInput({
 
   return (
     <>
+      <p role="status" className="text-xs text-slate-600 dark:text-slate-300">Tiempo para esta respuesta: {formatTime(timeRemaining)}. Hasta 2 minutos; al agotarse, se envía lo que respondiste o se registra «Sin respuesta». Cinco segundos de silencio después de hablar envían tu respuesta.</p>
       {!isTextMode && (
         <div className="rounded-2xl border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/70 dark:bg-indigo-950/30 p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between text-left">
           <div className="flex items-center gap-3">
@@ -62,10 +64,10 @@ export default function InterviewChatInput({
             </button>
             <div>
               <span className="text-xs font-black text-slate-900 dark:text-white block">
-                {isRecording ? 'Te estoy escuchando' : 'Responder por voz'}
+                {isRecording ? 'Te estoy escuchando' : autoVoiceEnabled ? 'Conversación por voz activa' : 'Activar conversación por voz'}
               </span>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                {micDisabled ? 'Micrófono no disponible. Usa la respuesta escrita.' : isRecording ? 'Habla con naturalidad. Esperaré unos segundos de silencio antes de procesar.' : 'Presiona el micrófono y responde como en una videollamada.'}
+                {micDisabled ? 'Micrófono no disponible. Usa la respuesta escrita.' : isRecording ? 'Habla con naturalidad. El silencio envía tu respuesta. Di «termina la entrevista» para cerrar.' : autoVoiceEnabled ? 'Escucharé automáticamente después de cada pregunta. Di «termina la entrevista» para cerrar.' : 'Activa el micrófono para continuar por voz o elige texto.'}
               </p>
             </div>
           </div>
@@ -85,7 +87,7 @@ export default function InterviewChatInput({
         <div className="bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-150 dark:border-indigo-500/40 rounded-xl p-3 flex items-start gap-2.5 text-[10px] text-indigo-700 dark:text-indigo-300 animate-fade-in text-left">
           <Sparkles className="h-4 w-4 shrink-0 text-indigo-650 mt-0.5 animate-pulse" />
           <div>
-            <strong>Modo Escrito Activo:</strong> El micrófono y la telemetría de silencio están apagados. Escribe tu respuesta libremente y haz clic en "Enviar respuesta" al finalizar.
+            <strong>Modo Escrito Activo:</strong> Micrófono apagado. Escribe tu respuesta y pulsa «Enviar respuesta».
           </div>
         </div>
       )}
@@ -173,7 +175,7 @@ export default function InterviewChatInput({
             title="Descartar esta entrevista sin guardar resultados"
           >
             <X className="h-3.5 w-3.5" />
-            {abandoning ? 'Descartando…' : 'Abandonar'}
+            {abandoning ? 'Descartando…' : 'Descartar entrevista'}
           </button>
         </div>
 

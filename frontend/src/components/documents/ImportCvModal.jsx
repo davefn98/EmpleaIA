@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, Sparkles, Loader2, Upload, FileText, AlertCircle } from 'lucide-react';
 import { apiUpload } from '../../utils/api';
 
@@ -15,9 +15,14 @@ const IMPORT_ERROR_MESSAGES = {
   UNSUPPORTED_FORMAT: 'Formato no válido. Solo se permiten archivos PDF, DOCX o TXT.',
   FILE_TOO_LARGE: 'El archivo supera el límite de 5 MB.',
   NO_TEXT_EXTRACTED: 'No se pudo extraer texto automáticamente. Intenta subir un PDF con texto seleccionable o copia el contenido manualmente.',
-  TEXT_TOO_SHORT: 'El texto del CV es demasiado corto para extraer datos. Intenta pegar más contenido del documento.',
-  BAD_REQUEST: 'Adjunta un archivo PDF, DOCX o TXT, o pega el contenido de tu CV.'
+  TEXT_TOO_SHORT: 'El texto del CV es demasiado corto para extraer datos (mínimo ~100 caracteres). Intenta pegar más contenido del documento o subir un archivo con más texto.',
+  BAD_REQUEST: 'Adjunta un archivo PDF, DOCX o TXT, o pega el contenido de tu CV.',
+  PDF_SCANNED: 'El PDF parece ser un escaneo o imagen digitalizada sin texto seleccionable. Por favor, sube un documento digital o copia y pega el texto manualmente.',
+  PDF_PASSWORD_PROTECTED: 'El archivo PDF está protegido con contraseña o encriptado. Quita la protección e intenta nuevamente.',
+  PDF_PARSE_ERROR: 'Ocurrió un error técnico al analizar la estructura del PDF. Intenta copiar y pegar el texto manualmente.',
+  DOCX_PARSE_ERROR: 'No se pudo extraer texto del archivo Word (.docx) debido a un error de formato.'
 };
+
 
 /**
  * Modal flotante para importar un CV con IA (PDF, DOCX, TXT o texto pegado).
@@ -28,6 +33,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
   const [pastedText, setPastedText] = useState('');
   const [parsing, setParsing] = useState(false);
   const [error, setError] = useState('');
+  const [preview, setPreview] = useState(null);
   const fileInputRef = useRef(null);
   const parsingRef = useRef(false);
 
@@ -50,6 +56,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
       setPastedText('');
       setParsing(false);
       setError('');
+      setPreview(null);
     }
   }, [open]);
 
@@ -74,10 +81,12 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
       return;
     }
     setSelectedFile(file);
+    setPreview(null);
   };
 
   const handleClearFile = () => {
     setSelectedFile(null);
+    setPreview(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -100,8 +109,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
       const data = await apiUpload('/cv/parse-import', formData);
 
       if (data.success && data.parsedData) {
-        onParsed(data.parsedData);
-        onClose();
+        setPreview(data.parsedData);
       } else {
         throw new Error(data.error || 'No se pudo extraer la información del CV.');
       }
@@ -130,7 +138,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
               Importar CV con IA
             </h3>
             <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
-              Sube tu CV en PDF, DOCX o TXT para que la IA extraiga tus datos profesionales y complete este formulario. Solo llena este CV; tu perfil no se modifica.
+              Sube tu CV en PDF, DOCX o TXT para que la IA extraiga tus datos profesionales y complete este formulario. Revisa lo extraído antes de aplicarlo. Solo llena este CV; tu perfil no se modifica.
             </p>
           </div>
           <button
@@ -188,11 +196,28 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
           <textarea
             rows={4}
             value={pastedText}
-            onChange={(e) => { setPastedText(e.target.value); setError(''); }}
+            onChange={(e) => { setPastedText(e.target.value); setError(''); setPreview(null); }}
             placeholder="Pega aquí el contenido de tu CV actual..."
             disabled={parsing || !!selectedFile}
             className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-2.5 text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-50"
           />
+
+          {preview && (
+            <div className="space-y-3 border border-indigo-200 bg-indigo-50/40 dark:bg-slate-800 rounded-xl p-3">
+              <p className="text-xs font-bold">Revisa el contenido antes de aplicarlo</p>
+              <p className="text-xs">{preview.first_name} {preview.last_name} · {preview.work_experience.length} experiencias · {preview.academic_background.length} estudios</p>
+              <div className="max-h-64 overflow-y-auto space-y-3">
+                {preview.work_experience.map((experience, index) => (
+                  <div key={index} className="text-xs">
+                    <p className="font-bold">{experience.role} · {experience.company}</p>
+                    <p className="whitespace-pre-wrap mt-1">{experience.description}</p>
+                  </div>
+                ))}
+                <details className="text-xs"><summary className="cursor-pointer">Ver todos los datos extraídos</summary><pre className="whitespace-pre-wrap break-words mt-2">{JSON.stringify(preview, null, 2)}</pre></details>
+              </div>
+              <p className="text-[11px]">Comprueba que estén todas las responsabilidades. El puesto y la vacante actuales se conservan.</p>
+            </div>
+          )}
 
           {/* Error controlado: el modal permanece abierto */}
           {error && (
@@ -215,8 +240,8 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
           </button>
           <button
             type="button"
-            onClick={handleParse}
-            disabled={!canSubmit}
+            onClick={() => { if (preview) { onParsed(preview); onClose(); } else { handleParse(); } }}
+            disabled={!preview && !canSubmit}
             className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-5 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
           >
             {parsing ? (
@@ -227,7 +252,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
             ) : (
               <>
                 <Sparkles className="h-3.5 w-3.5" />
-                Extraer con IA
+                {preview ? 'Aplicar al formulario' : 'Extraer con IA'}
               </>
             )}
           </button>

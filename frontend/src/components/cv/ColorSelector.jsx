@@ -1,4 +1,3 @@
-import React from 'react';
 import { Check } from 'lucide-react';
 import { CV_COLORS } from '../../config/cvThemes';
 

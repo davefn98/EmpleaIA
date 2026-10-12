@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
-import { useNotification } from '../components/common/NotificationContext';
+import { loadUserSnapshot } from '../utils/userDataApi';
+import { useNotification } from '../components/common/notificationContext';
 import { mapError } from '../utils/errorMapper';
 import { 
   Sparkles, 
@@ -8,12 +9,7 @@ import {
   Mail, 
   MessageSquare, 
   Award, 
-  TrendingUp, 
-  Calendar,
-  ChevronRight,
-  TrendingDown,
-  BookOpen,
-  CheckCircle2,
+  TrendingUp,
   Clock,
   Trash2
 } from 'lucide-react';
@@ -26,7 +22,7 @@ export default function Dashboard({ setActiveView }) {
     totalCvs: 0,
     totalLetters: 0,
     totalInterviews: 0,
-    avgScore: 0,
+    avgScore: null,
     streak: 0
   });
 
@@ -34,8 +30,12 @@ export default function Dashboard({ setActiveView }) {
   const [history, setHistory] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [metricsTab, setMetricsTab] = useState('general');
+  // Error al cargar las métricas: se muestra banner en vez de KPIs en cero
+  const [loadError, setLoadError] = useState('');
 
   const fetchRealData = async () => {
+    setLoading(true);
+    setLoadError('');
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
       setLoading(false);
@@ -43,52 +43,14 @@ export default function Dashboard({ setActiveView }) {
     }
 
     try {
-      // Cargar Perfil
-      const { data: pData } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
-      
+      const snapshot = await loadUserSnapshot(session.user.id);
+      const pData = snapshot.profile;
+      const cvRows = (snapshot.cvs || []).slice(0, 3);
+      const letterRows = (snapshot.letters || []).slice(0, 3);
+      const ints = snapshot.interviews || [];
+      const cvCount = snapshot.cvs?.length || 0;
+      const letterCount = snapshot.letters?.length || 0;
       if (pData) setProfile(pData);
-
-      // Cargar conteo de base de datos
-      const { count: cvCount } = await supabase
-        .from('generated_cvs')
-        .select('*', { count: 'exact', head: true })
-        .eq('profile_id', session.user.id);
-
-      const { count: letterCount } = await supabase
-        .from('cover_letters')
-        .select('*', { count: 'exact', head: true })
-        .eq('profile_id', session.user.id);
-
-      // Cargar detalles de filas para actividades reales
-      const { data: cvRows } = await supabase
-        .from('generated_cvs')
-        .select('id, created_at, cv_data')
-        .eq('profile_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      const { data: letterRows } = await supabase
-        .from('cover_letters')
-        .select('id, created_at, job_offer_text')
-        .eq('profile_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      const { data: ints } = await supabase
-        .from('interviews')
-        .select(`
-          id, 
-          interview_type, 
-          status, 
-          created_at,
-          interview_messages(sender, message_content, evaluation)
-        `)
-        .eq('profile_id', session.user.id)
-        .order('created_at', { ascending: false });
 
       let totalScore = 0;
       let scoreCount = 0;
@@ -106,8 +68,7 @@ export default function Dashboard({ setActiveView }) {
               if (m.sender === 'user' && m.evaluation && typeof m.evaluation.score === 'number') {
                 intvScore += m.evaluation.score;
                 intvCount++;
-                totalScore += m.evaluation.score;
-                scoreCount++;
+                if(['completed','completed_early'].includes(intv.status)) {totalScore += m.evaluation.score;scoreCount++;}
               }
               if (m.sender === 'user' && m.evaluation && Array.isArray(m.evaluation.improvements)) {
                 allImprovements.push(...m.evaluation.improvements);
@@ -121,7 +82,8 @@ export default function Dashboard({ setActiveView }) {
             id: intv.id,
             type: intv.interview_type === 'technical' ? 'Técnica' : intv.interview_type === 'behavioral' ? 'Por competencias' : 'General',
             date: new Date(intv.created_at).toLocaleDateString('es-PE', { day: 'numeric', month: 'short', year: 'numeric' }),
-            score: calculatedIntScore || 0
+            score: calculatedIntScore,
+            status:intv.status
           });
         });
       }
@@ -159,7 +121,9 @@ export default function Dashboard({ setActiveView }) {
         totalCvs: cvCount || 0,
         totalLetters: letterCount || 0,
         totalInterviews: ints?.length || 0,
-        avgScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0,
+        avgScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : null,
+        completedInterviews: ints.filter(i => ['completed','completed_early'].includes(i.status)).length,
+        pausedInterviews: ints.filter(i => i.status === 'paused').length,
         streak: calculatedStreak
       });
       
@@ -184,7 +148,7 @@ export default function Dashboard({ setActiveView }) {
             id: intv.id,
             type: 'interview',
             title: `Entrevista ${intv.interview_type === 'technical' ? 'técnica' : intv.interview_type === 'behavioral' ? 'por competencias' : 'general'}`,
-            score: calculatedIntScore ? `Puntaje: ${calculatedIntScore}%` : 'En curso',
+            score: calculatedIntScore != null ? `Puntaje: ${calculatedIntScore}%` : ({active:'En curso',paused:'Pausada',completed:'Sin evaluación individual',completed_early:'Finalizada anticipadamente',pending_ai_feedback:'Análisis pendiente',failed_to_start:'No iniciada',abandoned:'Descartada'}[intv.status] || 'Sin evaluar'),
             date: new Date(intv.created_at).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }),
             timestamp: new Date(intv.created_at).getTime()
           });
@@ -223,7 +187,7 @@ export default function Dashboard({ setActiveView }) {
         const uniqueImps = [...new Set(allImprovements)];
         const dynamicRecs = uniqueImps.slice(0, 3).map((imp, index) => ({
           id: index + 1,
-          title: index === 0 ? 'Mejora tu comunicación' : index === 1 ? 'Profundiza en tus conceptos' : 'Práctica adicional',
+          title: `Mejora observada ${index+1}`,
           desc: imp
         }));
         setRecommendations(dynamicRecs);
@@ -233,9 +197,18 @@ export default function Dashboard({ setActiveView }) {
 
     } catch (err) {
       console.error('Error cargando métricas en dashboard:', err);
+      // Con sesión expirada api.js ya cerró sesión y App redirige al login.
+      if (err.code !== 'SESSION_EXPIRED') {
+        setLoadError(mapError(err));
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  const openInterviewHistory = (id) => {
+    sessionStorage.setItem('empleaia_history_interview_id',id);
+    setActiveView?.('history');
   };
 
   const handleDeleteDocument = (id, type) => {
@@ -268,7 +241,7 @@ export default function Dashboard({ setActiveView }) {
   }, []);
 
   // Generar coordenadas dinámicas de gráfico
-  const chronoData = [...history].reverse();
+  const chronoData = [...history].filter(i => i.score != null).reverse();
   const N = chronoData.length;
   let chartPath = '';
   let areaPath = '';
@@ -293,12 +266,7 @@ export default function Dashboard({ setActiveView }) {
     }
   }
 
-  // Desempeño por Categoría dinámico según avgScore
-  const avgScore = stats.avgScore || 0;
-  const catCommunication = avgScore > 0 ? Math.min(Math.round(avgScore * 1.03), 98) : 0;
-  const catKnowledge = avgScore > 0 ? Math.min(Math.round(avgScore * 0.95), 95) : 0;
-  const catConfidence = avgScore > 0 ? Math.min(Math.round(avgScore * 0.97), 96) : 0;
-  const catProblemSolving = avgScore > 0 ? Math.min(Math.round(avgScore * 1.07), 99) : 0;
+
 
   // Render SKELETON (Requisito 5)
   if (loading) {
@@ -388,6 +356,19 @@ export default function Dashboard({ setActiveView }) {
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <div className="mx-auto w-full max-w-[1600px]">
 
+      {/* Aviso de error de carga: sin él, los KPIs en cero parecen una cuenta vacía */}
+      {loadError && (
+        <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-center gap-3 mb-6">
+          <span className="flex-1">No se pudieron cargar tus métricas. {loadError}</span>
+          <button
+            onClick={fetchRealData}
+            className="shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg cursor-pointer"
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
+
       {/* SECCIÓN BIENVENIDA */}
       <div className="mb-8">
         <div className="bg-white border border-slate-200/80 rounded-2xl p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
@@ -441,11 +422,11 @@ export default function Dashboard({ setActiveView }) {
               <span className="text-3xl font-black text-slate-950">{stats.totalInterviews}</span>
               {stats.totalInterviews > 0 && (
                 <span className="bg-emerald-50 text-emerald-600 text-[9px] font-extrabold px-1.5 py-0.5 rounded-md border border-emerald-100 animate-fade-in">
-                  Realizadas
+                  Registradas
                 </span>
               )}
             </div>
-            <p className="text-[9px] text-slate-400">Simulaciones de chat con IA</p>
+            <p className="text-[9px] text-slate-400">{stats.completedInterviews || 0} finalizadas · {stats.pausedInterviews || 0} pausadas</p>
           </div>
 
           {/* KPI 3: Puntaje Promedio */}
@@ -455,14 +436,14 @@ export default function Dashboard({ setActiveView }) {
               <Award className="h-4.5 w-4.5 text-violet-500" />
             </div>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-black text-slate-950">{stats.avgScore}%</span>
+              <span className="text-3xl font-black text-slate-950">{stats.avgScore == null ? 'Sin evaluar' : `${stats.avgScore}%`}</span>
               {stats.avgScore > 0 && (
                 <span className="bg-emerald-50 text-emerald-600 text-[9px] font-extrabold px-1.5 py-0.5 rounded-md border border-emerald-100 animate-fade-in">
                   Promedio
                 </span>
               )}
             </div>
-            <p className="text-[9px] text-slate-400">Nivel global de competencias</p>
+            <p className="text-[9px] text-slate-400">Promedio de respuestas de entrevistas finalizadas</p>
           </div>
 
           {/* KPI 4: Racha */}
@@ -515,6 +496,7 @@ export default function Dashboard({ setActiveView }) {
                       {act.date}
                     </span>
                   </div>
+                  {act.type === 'interview' && <button onClick={()=>openInterviewHistory(act.id)} className="text-xs text-indigo-600 font-bold cursor-pointer" aria-label={`Ver detalle de ${act.title}`}>Ver</button>}
                   {(act.type === 'cv' || act.type === 'letter') && (
                     <button
                       onClick={() => handleDeleteDocument(act.id, act.type)}
@@ -575,7 +557,7 @@ export default function Dashboard({ setActiveView }) {
               {/* Gráfico SVG de línea (Progreso de Score) */}
               <div className="space-y-3">
                 <div className="flex items-baseline gap-1.5">
-                  <span className="text-3xl font-black text-slate-900">{stats.avgScore}%</span>
+                  <span className="text-3xl font-black text-slate-900">{stats.avgScore == null ? 'Sin evaluar' : `${stats.avgScore}%`}</span>
                   <span className="text-slate-400 text-[10px] font-bold flex items-center shrink-0">
                     Puntaje promedio
                   </span>
@@ -629,56 +611,10 @@ export default function Dashboard({ setActiveView }) {
                 )}
               </div>
 
-              {/* Categorías de Desempeño (Barras horizontales) */}
-              <div className="space-y-3.5">
-                <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">Desempeño por Categoría</span>
-                
-                <div className="space-y-2.5 text-xs">
-                  {/* Comunicacion */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between font-bold text-slate-700">
-                      <span>Comunicación</span>
-                      <span className="text-indigo-650">{catCommunication}%</span>
-                    </div>
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-600 rounded-full transition-all duration-300" style={{ width: `${catCommunication}%` }}></div>
-                    </div>
-                  </div>
-
-                  {/* Conocimientos */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between font-bold text-slate-700">
-                      <span>Conocimientos</span>
-                      <span className="text-indigo-650">{catKnowledge}%</span>
-                    </div>
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-600 rounded-full transition-all duration-300" style={{ width: `${catKnowledge}%` }}></div>
-                    </div>
-                  </div>
-
-                  {/* Confianza */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between font-bold text-slate-700">
-                      <span>Confianza</span>
-                      <span className="text-indigo-650">{catConfidence}%</span>
-                    </div>
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-600 rounded-full transition-all duration-300" style={{ width: `${catConfidence}%` }}></div>
-                    </div>
-                  </div>
-
-                  {/* Resolucion */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between font-bold text-slate-700">
-                      <span>Resolución de problemas</span>
-                      <span className="text-indigo-650">{catProblemSolving}%</span>
-                    </div>
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-indigo-600 rounded-full transition-all duration-300" style={{ width: `${catProblemSolving}%` }}></div>
-                    </div>
-                  </div>
-                </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
+                El promedio refleja las respuestas con evaluación. Las competencias específicas y la confianza no tienen mediciones independientes en esta versión.
               </div>
+
             </div>
             )}
 
@@ -687,11 +623,11 @@ export default function Dashboard({ setActiveView }) {
                 <div className="space-y-3">
                   <div className="flex items-baseline gap-1.5">
                     <span className="text-3xl font-black text-slate-900">{stats.totalInterviews}</span>
-                    <span className="text-slate-400 text-[10px] font-bold uppercase">entrevistas realizadas</span>
+                    <span className="text-slate-400 text-[10px] font-bold uppercase">entrevistas registradas</span>
                   </div>
                   <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-4">
                     <p className="text-[10px] text-indigo-600 font-bold uppercase tracking-wider">Puntaje promedio</p>
-                    <p className="text-2xl font-black text-indigo-650 mt-1">{stats.avgScore}%</p>
+                    <p className="text-2xl font-black text-indigo-650 mt-1">{stats.avgScore == null ? 'Sin evaluar' : `${stats.avgScore}%`}</p>
                   </div>
                 </div>
                 <div className="space-y-2.5">
@@ -700,9 +636,9 @@ export default function Dashboard({ setActiveView }) {
                     <div key={item.id} className="flex items-center justify-between bg-slate-50 border border-slate-150 rounded-xl p-3 text-xs">
                       <div>
                         <p className="font-bold text-slate-800">{item.type}</p>
-                        <p className="text-[10px] text-slate-400">{item.date}</p>
+                        <p className="text-[10px] text-slate-400">{item.date} · {({active:'En curso',paused:'Pausada',completed:'Completada',completed_early:'Finalizada anticipadamente',pending_ai_feedback:'Análisis pendiente',failed_to_start:'No iniciada',abandoned:'Descartada'}[item.status] || 'Sin evaluar')}</p>
                       </div>
-                      <span className="font-black text-indigo-650">{item.score}%</span>
+                      <div className="flex items-center gap-2"><span className="font-black text-indigo-650">{item.score == null ? 'Sin evaluar' : `${item.score}%`}</span><button onClick={()=>openInterviewHistory(item.id)} className="rounded-lg border border-indigo-200 px-2 py-1 text-indigo-600 cursor-pointer" aria-label={`Ver detalle de entrevista ${item.type}`}>Ver detalle</button></div>
                     </div>
                   )) : (
                     <div className="h-32 flex flex-col justify-center items-center bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center p-4">
@@ -747,17 +683,8 @@ export default function Dashboard({ setActiveView }) {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 py-4 animate-fade-in">
                 <div className="space-y-3.5">
                   <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">Competencias evaluadas</span>
-                  {[['Comunicación', catCommunication], ['Conocimientos', catKnowledge], ['Confianza', catConfidence], ['Resolución de problemas', catProblemSolving]].map(([label, value]) => (
-                    <div key={label} className="space-y-1">
-                      <div className="flex justify-between font-bold text-slate-700 text-xs">
-                        <span>{label}</span>
-                        <span className="text-indigo-650">{value}%</span>
-                      </div>
-                      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-full bg-indigo-600 rounded-full transition-all duration-300" style={{ width: `${value}%` }}></div>
-                      </div>
-                    </div>
-                  ))}
+                  <p className="text-xs text-slate-500">No hay mediciones independientes por competencia. Revisa el feedback de cada respuesta para conocer fortalezas y mejoras observadas.</p>
+
                 </div>
                 <div className="space-y-2.5">
                   <span className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wider block">Recomendaciones</span>

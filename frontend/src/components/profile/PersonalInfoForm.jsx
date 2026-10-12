@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { User, Mail, Phone, MapPin, ChevronRight, AlertCircle } from 'lucide-react';
 
 export default function PersonalInfoForm({ data, onChange, onNext }) {
@@ -161,6 +161,18 @@ export default function PersonalInfoForm({ data, onChange, onNext }) {
                 {errors.location}
               </p>
             )}
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">Carrera o profesión</label>
+            <input value={data.career || ''} onChange={(e) => onChange('career', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-xs" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">Puesto objetivo</label>
+            <input value={data.target_role || ''} onChange={(e) => onChange('target_role', e.target.value)} placeholder="Ej.: Backend Developer / Tech Lead" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-xs" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1">Descripción del puesto objetivo</label>
+            <textarea rows={6} value={data.target_job_description || ''} onChange={(e) => onChange('target_job_description', e.target.value)} placeholder="Pega las responsabilidades y requisitos de la vacante. Se utilizarán para personalizar las entrevistas." className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-xs whitespace-pre-wrap" />
           </div>
         </div>
       </div>

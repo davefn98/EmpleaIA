@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { Lock, Mail, User, AlertCircle, CheckCircle2, ArrowRight, BookOpen, Briefcase, ChevronLeft } from 'lucide-react';
 import { mapError } from '../utils/errorMapper';
@@ -12,7 +12,14 @@ export default function Login({ onLoginSuccess, onBackToHome }) {
   const [lastName, setLastName] = useState('');
   const [career, setCareer] = useState('');
   const [targetRole, setTargetRole] = useState('');
-  const [error, setError] = useState('');
+  // Aviso dejado por api.js / App.jsx cuando la sesión expiró y se forzó el logout.
+  const [error, setError] = useState(() => {
+    if (sessionStorage.getItem('empleaia_session_expired')) {
+      sessionStorage.removeItem('empleaia_session_expired');
+      return 'Tu sesión expiró por inactividad. Inicia sesión nuevamente.';
+    }
+    return '';
+  });
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +32,7 @@ export default function Login({ onLoginSuccess, onBackToHome }) {
     try {
       if (isLogin) {
         // Flujo de Login
-        const { data, error: authError } = await supabase.auth.signInWithPassword({
+        const { error: authError } = await supabase.auth.signInWithPassword({
           email,
           password,
         });

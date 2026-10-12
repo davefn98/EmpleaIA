@@ -1,4 +1,5 @@
 import { supabaseAdmin } from './supabaseClient.js';
+import { getCloseInterviewTargetStatus } from '../services/interviewService.js';
 
 /**
  * Cierra una sesión de entrevista de forma garantizada.
@@ -13,9 +14,10 @@ import { supabaseAdmin } from './supabaseClient.js';
  * @param {string} params.userId         - UUID del usuario (validación de propiedad)
  * @param {'finish'|'abandon'} params.action - Acción solicitada
  * @param {object} params.userScopedDb   - Cliente Supabase del usuario (req.db) como fallback
+ * @param {boolean} [params.hasAnswers]  - Override cuando el caller ya reconstruyó pares Q/A reales
  * @returns {Promise<{ ok: boolean, finalStatus: string|null, deleted: boolean, error?: string }>}
  */
-export async function closeInterviewSession({ interviewId, userId, action, userScopedDb }) {
+export async function closeInterviewSession({ interviewId, userId, action, userScopedDb, hasAnswers: hasAnswersOverride }) {
   const db = supabaseAdmin || userScopedDb;
   const label = supabaseAdmin ? 'admin' : 'user-scoped';
 
@@ -37,44 +39,22 @@ export async function closeInterviewSession({ interviewId, userId, action, userS
   }
 
   // Entrevista ya cerrada → éxito inmediato
-  if (!['active', 'pending_ai_feedback'].includes(interview.status)) {
+  if (!['active', 'pending_ai_feedback', 'paused'].includes(interview.status)) {
     console.log(`[closeInterviewSession][${label}] Entrevista ${interviewId} ya está en status='${interview.status}'. No requiere cambio.`);
     return { ok: true, finalStatus: interview.status, deleted: false };
   }
 
-  const hasAnswers = (interview.questions_answered || 0) > 0;
+  const hasAnswers = typeof hasAnswersOverride === 'boolean'
+    ? hasAnswersOverride
+    : (interview.questions_answered || 0) > 0;
 
   // 2. Determinar status objetivo
-  let targetStatus;
-  if (action === 'finish' && hasAnswers) {
-    targetStatus = 'completed_early';
-  } else if (action === 'finish' && !hasAnswers) {
-    targetStatus = '__delete__';
-  } else if (action === 'abandon' && !hasAnswers) {
-    targetStatus = '__delete__';
-  } else {
-    // abandon con respuestas
-    targetStatus = 'abandoned';
+  const targetStatus = getCloseInterviewTargetStatus({ action, hasAnswers });
+  if (!targetStatus) {
+    return { ok: false, finalStatus: interview.status, deleted: false, error: 'Acción de cierre inválida.' };
   }
 
-  // 3a. Path DELETE (sin respuestas): intentar borrar físicamente
-  if (targetStatus === '__delete__') {
-    const { data: deleted, error: delErr } = await db
-      .from('interviews')
-      .delete()
-      .eq('id', interviewId)
-      .select('id');
-
-    if (!delErr && deleted?.length) {
-      console.log(`[closeInterviewSession][${label}] Entrevista ${interviewId} eliminada físicamente.`);
-      return { ok: true, finalStatus: null, deleted: true };
-    }
-
-    console.warn(`[closeInterviewSession][${label}] DELETE falló para ${interviewId}. Fallback a UPDATE.`, delErr?.message || 'sin filas afectadas');
-    targetStatus = 'failed_to_start';
-  }
-
-  // 3b. Path UPDATE: cascada de status candidatos
+  // 3. Path UPDATE: cascada de status candidatos
   const statusCandidates = targetStatus === 'abandoned'
     ? ['abandoned', 'failed_to_start']
     : [targetStatus];

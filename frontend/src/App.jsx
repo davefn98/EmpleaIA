@@ -1,25 +1,29 @@
-import React, { useState, useEffect } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { supabase } from './utils/supabaseClient';
+import { apiRequest } from './utils/api';
+import { normalizeProfile } from './utils/userData';
 import AppLayout from './components/layout/AppLayout';
 import Landing from './views/Landing';
 import Login from './views/Login';
-import Dashboard from './views/Dashboard';
-import Profile from './views/Profile';
-import ProfileView from './views/ProfileView';
-import CvCustomize from './views/CvCustomize';
-import Documents from './views/Documents';
-import Interviews from './views/Interviews';
-import CompareInterviews from './views/CompareInterviews';
-import ActivityHistory from './views/ActivityHistory';
-import Drafts from './views/Drafts';
-import SettingsView from './views/SettingsView';
-import { BookOpen, HelpCircle, GraduationCap, ShieldAlert, Sparkles, TrendingUp, Settings, Loader2, FileText, MessageSquare, Award, Clock, Calendar, CheckCircle2, ChevronRight, Mail } from 'lucide-react';
+const Dashboard = lazy(() => import('./views/Dashboard'));
+const Profile = lazy(() => import('./views/Profile'));
+const ProfileView = lazy(() => import('./views/ProfileView'));
+const CvCustomize = lazy(() => import('./views/CvCustomize'));
+const Documents = lazy(() => import('./views/Documents'));
+const Interviews = lazy(() => import('./views/Interviews'));
+const CompareInterviews = lazy(() => import('./views/CompareInterviews'));
+const ActivityHistory = lazy(() => import('./views/ActivityHistory'));
+const Drafts = lazy(() => import('./views/Drafts'));
+const SettingsView = lazy(() => import('./views/SettingsView'));
+import { BookOpen, Sparkles, TrendingUp, FileText, MessageSquare, Clock, Mail } from 'lucide-react';
 
 function App() {
   const [user, setUser] = useState(null);
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+  // Permite que el modal de inactividad resetee los timers definidos en el efecto 2.b
+  const inactivityResetRef = useRef(null);
 
   // Lógica de tema Light / Dark
   const [theme, setTheme] = useState(() => {
@@ -42,8 +46,8 @@ function App() {
   // Estados de datos cargados en tiempo real para vistas internas
   const [profile, setProfile] = useState(null);
   const [stats, setStats] = useState({ totalCvs: 0, totalLetters: 0, totalInterviews: 0, avgScore: 0, streak: 0 });
-  const [hasActivity, setHasActivity] = useState(false);
-  const [loadingViewData, setLoadingViewData] = useState(false);
+  const [, setHasActivity] = useState(false);
+  const [, setLoadingViewData] = useState(false);
   const [history, setHistory] = useState([]);
 
   // Navegar a una ruta actualizando el historial
@@ -74,12 +78,12 @@ function App() {
   };
 
   // Obtener la vista activa calculada a partir del pathname y estado de login (soportando rutas en español y módulos específicos)
-  let activeView = 'landing';
+  let activeView;
   if (!user) {
     if (currentPath === '/login') activeView = 'login';
     else activeView = 'landing';
   } else {
-    if (currentPath === '/profile' || currentPath === '/mi-perfil') activeView = 'documents-cv';
+    if (currentPath === '/profile' || currentPath === '/mi-perfil') activeView = 'profile-view';
     else if (currentPath === '/profile/view') activeView = 'profile-view'; // HU06 view profile
     else if (currentPath === '/documents/cv/customize') activeView = 'cv-customize'; // HU15 customizer
     else if (currentPath === '/documents/cv' || currentPath === '/generar-documentos/cv') activeView = 'documents-cv';
@@ -103,7 +107,7 @@ function App() {
       } else if (currentPath === '/metrics' || currentPath === '/mis-metricas') {
         navigateTo('/dashboard');
       } else if (currentPath === '/profile' || currentPath === '/mi-perfil') {
-        navigateTo('/documents/cv');
+        navigateTo('/profile/view');
       }
     }
   }, [currentPath, user]);
@@ -185,12 +189,35 @@ function App() {
     const onActivity = () => reset();
     events.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
     reset();
+    inactivityResetRef.current = reset;
 
     return () => {
       events.forEach(e => window.removeEventListener(e, onActivity));
       clearTimeout(warnTimer);
       clearTimeout(logoutTimer);
+      inactivityResetRef.current = null;
     };
+  }, [user]);
+
+  // 2.c Revalidar la sesión al volver a la pestaña. Si el refresh token murió
+  // mientras la pestaña estaba dormida (los timers de JS no corren), getSession()
+  // devuelve null y hay que cerrar la sesión local y volver al login.
+  useEffect(() => {
+    if (!user) return;
+
+    const revalidateSession = async () => {
+      if (document.visibilityState !== 'visible') return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        sessionStorage.setItem('empleaia_session_expired', '1');
+        await supabase.auth.signOut();
+        setUser(null);
+        navigateTo('/login');
+      }
+    };
+
+    document.addEventListener('visibilitychange', revalidateSession);
+    return () => document.removeEventListener('visibilitychange', revalidateSession);
   }, [user]);
 
   // 3. Cargar dinámicamente datos del usuario autenticado (user_id = session.user.id)
@@ -205,37 +232,13 @@ function App() {
     const loadUserData = async () => {
       setLoadingViewData(true);
       try {
-        // Cargar Perfil del usuario
-        const { data: pData } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single();
+        const dashboard = await apiRequest(`/dashboard/${user.id}`, 'GET');
+        const pData = dashboard.profile;
+        const cvCount = dashboard.cvCount;
+        const letterCount = dashboard.letterCount;
+        const ints = dashboard.interviews;
 
-        const [{ count: cvCount }, { count: letterCount }] = await Promise.all([
-          supabase
-            .from('generated_cvs')
-            .select('*', { count: 'exact', head: true })
-            .eq('profile_id', user.id),
-          supabase
-            .from('cover_letters')
-            .select('*', { count: 'exact', head: true })
-            .eq('profile_id', user.id),
-        ]);
-
-        setProfile(pData || null);
-
-        // Cargar Entrevistas del usuario para calcular métricas reales
-        const { data: ints } = await supabase
-          .from('interviews')
-          .select(`
-            id,
-            interview_type,
-            created_at,
-            interview_messages(sender, evaluation)
-          `)
-          .eq('profile_id', user.id)
-          .order('created_at', { ascending: false });
+        setProfile(normalizeProfile(pData));
 
         let totalScore = 0;
         let scoreCount = 0;
@@ -308,7 +311,12 @@ function App() {
         setHasActivity((ints?.length || 0) > 0 || (cvCount || 0) > 0 || (letterCount || 0) > 0);
 
       } catch (err) {
-        console.error('[App.jsx] Error cargando datos de usuario:', err);
+        // Con sesión expirada api.js ya cerró sesión y el listener SIGNED_OUT
+        // redirige al login. Otros errores los reporta cada vista con su propio
+        // banner y reintento (Dashboard consulta estos mismos datos).
+        if (err.code !== 'SESSION_EXPIRED') {
+          console.error('[App.jsx] Error cargando datos de usuario:', err);
+        }
       } finally {
         setLoadingViewData(false);
       }
@@ -359,6 +367,7 @@ function App() {
       theme={theme}
       onToggleTheme={toggleTheme}
     >
+      <Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-500">Cargando m?dulo?</div>}>
         {showTimeoutWarning && (
           <div className="fixed inset-0 z-[100] bg-black/40 flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 space-y-4 text-center">
@@ -371,7 +380,7 @@ function App() {
               </div>
               <div className="flex gap-2 justify-center">
                 <button
-                  onClick={() => setShowTimeoutWarning(false)}
+                  onClick={() => { inactivityResetRef.current?.(); setShowTimeoutWarning(false); }}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold px-5 py-2 rounded-xl cursor-pointer"
                 >
                   Seguir conectado
@@ -437,10 +446,10 @@ function App() {
           }
 
           const avgScore = stats.avgScore || 0;
-          const catCommunication = avgScore > 0 ? Math.min(Math.round(avgScore * 1.03), 98) : 0;
-          const catKnowledge = avgScore > 0 ? Math.min(Math.round(avgScore * 0.95), 95) : 0;
-          const catConfidence = avgScore > 0 ? Math.min(Math.round(avgScore * 0.97), 96) : 0;
-          const catProblemSolving = avgScore > 0 ? Math.min(Math.round(avgScore * 1.07), 99) : 0;
+          const catCommunication = avgScore;
+          const catKnowledge = avgScore;
+          const catConfidence = avgScore;
+          const catProblemSolving = avgScore;
 
           return (
             <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
@@ -668,6 +677,7 @@ function App() {
         {/* SETTINGS VIEW */}
         {activeView === 'settings' && <SettingsView user={user} profile={profile} />}
 
+      </Suspense>
     </AppLayout>
   );
 }

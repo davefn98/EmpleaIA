@@ -11,6 +11,7 @@ import interviewRouter    from './routes/interview.js';
 import profileRouter      from './routes/profile.js';
 import aiCredentialsRouter from './routes/aiCredentials.js';
 import accountRouter       from './routes/account.js';
+import userDataRouter       from './routes/userData.js';
 import { swaggerUi, swaggerSpec } from './lib/swagger.js';
 import { aiLimiter } from './lib/rateLimiters.js';
 
@@ -55,7 +56,8 @@ app.use('/api', cvRouter);
 app.use('/api', letterRouter);
 app.use('/api', interviewRouter);
 app.use('/api', profileRouter);
-app.use('/api', accountRouter); // Exportar / eliminar datos personales (HU10)
+app.use('/api', accountRouter);
+app.use('/api', userDataRouter); // Exportar / eliminar datos personales (HU10)
 app.use('/api/ai-credentials', aiCredentialsRouter); // Credenciales y preferencias de IA por usuario
 
 // Exponer especificación OpenAPI en JSON

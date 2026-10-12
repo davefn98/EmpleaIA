@@ -1,11 +1,9 @@
 import {
-  BookOpen,
   FileText,
   LayoutDashboard,
   Mail,
   MessageSquare,
   Settings,
-  TrendingUp,
   User,
   Clock,
 } from 'lucide-react';

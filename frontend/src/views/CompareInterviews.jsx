@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { apiRequest } from '../utils/api';
 import { Loader2, TrendingUp, ChevronLeft, CheckCircle2, MessageSquare, Award, AlertCircle } from 'lucide-react';

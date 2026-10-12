@@ -34,6 +34,7 @@ const SERVER_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
  * @param {number} [params.temperature] - 0.0 - 1.0
  * @param {number} [params.maxTokens]   - Límite de tokens de salida
  * @param {boolean} [params.jsonMode]   - Si true, solicita salida JSON
+ * @param {object} [params.responseSchema] - JSON Schema para proveedores compatibles
  * @returns {Promise<string>}
  */
 export async function generateText({
@@ -43,7 +44,8 @@ export async function generateText({
   messages,
   temperature = 0.7,
   maxTokens,
-  jsonMode = false
+  jsonMode = false,
+  responseSchema
 }) {
   const provider = getProvider(providerName);
   if (!provider) {
@@ -52,7 +54,7 @@ export async function generateText({
 
   console.log(`[AIProviderService] generateText → proveedor: ${providerName}, modelo: ${model}`);
 
-  const result = await provider.generateText({ apiKey, model, messages, temperature, maxTokens, jsonMode });
+  const result = await provider.generateText({ apiKey, model, messages, temperature, maxTokens, jsonMode, responseSchema });
   // Compatibilidad: si un proveedor aún devuelve un string, lo envolvemos en el objeto estándar.
   return typeof result === 'string' ? { content: result, usage: undefined } : result;
 }
@@ -107,6 +109,7 @@ export async function listModels({ providerName, apiKey }) {
  * @param {string} params.userId       - ID del usuario autenticado
  * @param {boolean} [params.jsonMode]  - Si true, solicita salida JSON
  * @param {number}  [params.maxTokens] - Límite de tokens
+ * @param {object}  [params.responseSchema] - JSON Schema para Structured Outputs
  * @returns {Promise<string>} El texto generado (sin metadatos de uso).
  */
 export async function generateWithFallback(params) {
@@ -127,7 +130,8 @@ export async function generateWithFallbackDetailed({
   db,
   userId,
   jsonMode = false,
-  maxTokens
+  maxTokens,
+  responseSchema
 }) {
   let pref = null;
   let userCred = null;
@@ -186,10 +190,11 @@ export async function generateWithFallbackDetailed({
         messages,
         temperature,
         maxTokens,
-        jsonMode
+        jsonMode,
+        responseSchema,
       });
       console.log(`[timing][ai] llamada=${Date.now() - callStart}ms proveedor=${providerName}`);
-      return result;
+      return {...result,provider:providerName,model:model || null};
     } catch (providerErr) {
       // Fallback honesto: el usuario eligió este proveedor; no cambiamos de
       // proveedor en silencio. Se devuelve un error controlado con el nombre.
@@ -211,10 +216,11 @@ export async function generateWithFallbackDetailed({
     messages,
     temperature: 0.7,
     maxTokens,
-    jsonMode
+    jsonMode,
+    responseSchema,
   });
   console.log(`[timing][ai] llamada=${Date.now() - callStart}ms proveedor=openai(servidor)`);
-  return result;
+  return {...result,provider:'openai',model:SERVER_OPENAI_MODEL};
 }
 
 /**

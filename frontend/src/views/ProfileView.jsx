@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { loadUserSnapshot } from '../utils/userDataApi';
 import { 
   User, 
   Briefcase, 
@@ -20,12 +21,15 @@ export default function ProfileView({ navigateTo }) {
   const [work, setWork] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
+  const [profileMissing, setProfileMissing] = useState(false);
   const [activeTab, setActiveTab] = useState('resumen');
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const fetchProfileData = async () => {
       setLoading(true);
       setErrorMsg('');
+      setProfileMissing(false);
 
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -36,50 +40,35 @@ export default function ProfileView({ navigateTo }) {
       const uid = session.user.id;
 
       try {
-        // GET /api/profile/{userId}
-        const token = session?.access_token;
-        const headers = {};
-        if (token) {
-          headers['Authorization'] = `Bearer ${token}`;
-        }
-        const response = await fetch(`http://localhost:5000/api/profile/${uid}`, { headers });
-        const data = await response.json();
-
-        if (response.ok && data.profile) {
+        // El snapshot trae perfil, educación y experiencia en una sola llamada.
+        const snapshot = await loadUserSnapshot(uid);
+        if (snapshot.profile) {
           setProfile({
-            ...data.profile,
-            location: data.profile.location || ''
+            ...snapshot.profile,
+            location: snapshot.profile.location || ''
           });
+        } else {
+          // Carga exitosa pero el usuario aún no tiene fila de perfil:
+          // NO es un error de recuperación.
+          setProfileMissing(true);
         }
-
-        // Cargar Educación
-        const { data: eduData } = await supabase
-          .from('academic_background')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('start_date', { ascending: false });
-
-        setAcademic(eduData || []);
-
-        // Cargar Experiencia
-        const { data: expData } = await supabase
-          .from('work_experience')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('start_date', { ascending: false });
-
-        setWork(expData || []);
+        setAcademic(snapshot.academic || []);
+        setWork(snapshot.work || []);
 
       } catch (err) {
         console.error('Error fetching profile view:', err);
-        setErrorMsg('Error al recuperar los datos del perfil.');
+        // Con sesión expirada api.js ya cerró sesión y App redirige al login;
+        // no hay que pisar ese flujo con un mensaje de error de datos.
+        if (err.code !== 'SESSION_EXPIRED') {
+          setErrorMsg('Error al recuperar los datos del perfil.');
+        }
       } finally {
         setLoading(false);
       }
     };
 
     fetchProfileData();
-  }, []);
+  }, [reloadKey]);
 
   const handleEditRedirect = () => {
     navigateTo('/documents/cv');
@@ -90,6 +79,39 @@ export default function ProfileView({ navigateTo }) {
       <div className="flex-1 min-h-full bg-slate-50 flex flex-col justify-center items-center font-sans">
         <Loader2 className="h-8 w-8 text-indigo-600 animate-spin mb-2" />
         <p className="text-slate-500 text-sm">Cargando perfil curricular...</p>
+      </div>
+    );
+  }
+
+  // Error de carga (red, servidor): mensaje + reintento, sin confundirlo con perfil vacío
+  if (errorMsg) {
+    return (
+      <div className="flex-1 min-h-full bg-slate-50 flex flex-col justify-center items-center font-sans px-4">
+        <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-4 max-w-md">
+          <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
+          <span>{errorMsg}</span>
+        </div>
+        <button
+          onClick={() => setReloadKey(k => k + 1)}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl cursor-pointer"
+        >
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
+  // Carga exitosa pero sin perfil creado todavía
+  if (profileMissing) {
+    return (
+      <div className="flex-1 min-h-full bg-slate-50 flex flex-col justify-center items-center font-sans px-4">
+        <EmptyState
+          icon={User}
+          title="Aún no has creado tu perfil"
+          description="Completa tu información profesional para empezar a generar CV, cartas y entrevistas personalizadas."
+          actionText="Completar Perfil"
+          onAction={() => navigateTo('/documents/cv')}
+        />
       </div>
     );
   }
@@ -119,13 +141,6 @@ export default function ProfileView({ navigateTo }) {
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <div className="mx-auto w-full max-w-[1600px]">
-
-      {errorMsg && (
-        <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6">
-          <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
-          <span>{errorMsg}</span>
-        </div>
-      )}
 
       {/* Franja de navegación del perfil: tabs segmentados + acción principal */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-3 shadow-sm mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

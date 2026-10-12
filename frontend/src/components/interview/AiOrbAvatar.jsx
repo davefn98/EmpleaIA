@@ -1,4 +1,3 @@
-import React from 'react';
 
 /**
  * Presencia visual de la entrevistadora IA: orbe/núcleo luminoso con halo,

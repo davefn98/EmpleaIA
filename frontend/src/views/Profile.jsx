@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { loadUserSnapshot } from '../utils/userDataApi';
 import { apiRequest } from '../utils/api';
+import { completeImportedExperience, mergeImportedPersonal } from '../utils/cvImport';
 import { AlertCircle, CheckCircle2, Sparkles, Upload, Loader2, ClipboardList } from 'lucide-react';
 import ProgressIndicator from '../components/common/ProgressIndicator';
 import LoadingOverlay from '../components/common/LoadingOverlay';
@@ -39,6 +41,7 @@ export default function Profile({ navigateTo }) {
     location: '',
     career: '',
     target_role: '',
+    target_job_description: '',
     bio: ''
   });
 
@@ -86,6 +89,7 @@ export default function Profile({ navigateTo }) {
             location: p.location || '',
             career: p.career || '',
             target_role: p.target_role || '',
+            target_job_description: p.target_job_description || '',
             bio: p.bio || ''
           });
           setTechSkills(p.technical_skills || []);
@@ -98,22 +102,9 @@ export default function Profile({ navigateTo }) {
         }
 
         // Cargar Educación
-        const { data: eduData } = await supabase
-          .from('academic_background')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('start_date', { ascending: false });
-
-        setEducationList(eduData || []);
-
-        // Cargar Experiencia
-        const { data: expData } = await supabase
-          .from('work_experience')
-          .select('*')
-          .eq('profile_id', uid)
-          .order('start_date', { ascending: false });
-
-        setExperienceList(expData || []);
+        const snapshot = await loadUserSnapshot(uid);
+        setEducationList(snapshot.academic || []);
+        setExperienceList(snapshot.work || []);
 
       } catch (err) {
         console.error('Error cargando perfil:', err);
@@ -197,38 +188,16 @@ export default function Profile({ navigateTo }) {
   // Mapea la data extraída (mismo formato que import-cv / import-text) al wizard
   const applyExtracted = (ext) => {
     if (!ext) return;
-    if (ext.full_name) {
-      const parts = ext.full_name.trim().split(/\s+/);
-      setPersonalInfo(prev => ({
-        ...prev,
-        first_name: parts[0] || '',
-        last_name: parts.slice(1).join(' ') || '',
-        phone: ext.phone || prev.phone,
-        location: ext.location || prev.location,
-        career: ext.career || prev.career,
-        target_role: ext.target_position || prev.target_role,
-        bio: ext.professional_summary || prev.bio
-      }));
-    }
-    if (Array.isArray(ext.technical_skills)) setTechSkills(ext.technical_skills);
-    if (Array.isArray(ext.soft_skills)) setSoftSkills(ext.soft_skills);
-    if (Array.isArray(ext.education)) {
-      setEducationList(ext.education.map(edu => ({
-        institution: edu.institution || '',
-        degree: edu.degree || '',
-        start_date: edu.start_date || '',
-        end_date: edu.end_date || ''
-      })));
-    }
-    if (Array.isArray(ext.experience)) {
-      setExperienceList(ext.experience.map(exp => ({
-        company: exp.company || '',
-        role: exp.role || '',
-        start_date: exp.start_date || '',
-        end_date: exp.end_date || '',
-        description: exp.description || ''
-      })));
-    }
+    setPersonalInfo(prev => mergeImportedPersonal(prev, {
+      first_name: ext.first_name || '', last_name: ext.last_name || '',
+      phone: ext.phone, location: ext.location, career: ext.career,
+      target_role: ext.target_position, target_job_description: ext.target_job_description,
+      bio: ext.professional_summary,
+    }));
+    if (ext.technical_skills?.length) setTechSkills(ext.technical_skills);
+    if (ext.soft_skills?.length) setSoftSkills(ext.soft_skills);
+    if (ext.education?.length) setEducationList(ext.education);
+    if (ext.experience?.length) setExperienceList(ext.experience.map(completeImportedExperience));
   };
 
   // HU05: importar desde texto pegado (perfil de LinkedIn u otro)
@@ -306,7 +275,7 @@ export default function Profile({ navigateTo }) {
 
       applyExtracted(resData.data);
 
-      setSuccessMsg('¡CV importado con éxito por la Inteligencia Artificial! Los campos correspondientes han sido pre-llenados.');
+      setSuccessMsg('CV importado para revisión. Se conservaron el puesto y la vacante existentes. Revisa las responsabilidades completas y las fechas antes de guardar el perfil.');
       setSelectedFile(null);
     } catch (err) {
       console.error(err);
@@ -329,63 +298,19 @@ export default function Profile({ navigateTo }) {
         email: personalInfo.email,
         phone: personalInfo.phone,
         location: personalInfo.location || '',
-        career: personalInfo.career || personalInfo.target_role || 'Estudiante',
-        target_role: personalInfo.target_role || personalInfo.career || 'Junior Developer',
+        career: personalInfo.career || personalInfo.target_role || '',
+        target_role: personalInfo.target_role || personalInfo.career || '',
+        target_job_description: personalInfo.target_job_description || '',
         bio: personalInfo.bio || '',
         technical_skills: techSkills,
         soft_skills: softSkills
       };
 
-      // Consumir PUT /api/profile/{userId}
-      const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token;
-
-      const headers = {
-        'Content-Type': 'application/json'
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      const response = await fetch(`http://localhost:5000/api/profile/${userId}`, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify(profilePayload)
+      await apiRequest(`/profile/${userId}/full`, 'PUT', {
+        profile: profilePayload,
+        academic_background: educationList.map(edu => ({ institution: edu.institution, degree: edu.degree, start_date: edu.start_date || '', end_date: edu.end_date || null, description: edu.description || null })),
+        work_experience: experienceList.map(exp => ({ company: exp.company, role: exp.role, start_date: exp.start_date || '', end_date: exp.end_date || null, description: exp.description || '', achievements: exp.achievements || [] })),
       });
-
-      const resData = await response.json();
-      if (!response.ok) {
-        throw new Error(resData.error || 'Error al guardar el perfil.');
-      }
-
-      // Sincronizar educación
-      await supabase.from('academic_background').delete().eq('profile_id', userId);
-      if (educationList.length > 0) {
-        const payloadEdu = educationList.map(edu => ({
-          profile_id: userId,
-          institution: edu.institution,
-          degree: edu.degree,
-          start_date: edu.start_date || new Date().toISOString().split('T')[0],
-          end_date: edu.end_date || null
-        }));
-        const { error } = await supabase.from('academic_background').insert(payloadEdu);
-        if (error) throw error;
-      }
-
-      // Sincronizar experiencia
-      await supabase.from('work_experience').delete().eq('profile_id', userId);
-      if (experienceList.length > 0) {
-        const payloadExp = experienceList.map(exp => ({
-          profile_id: userId,
-          company: exp.company,
-          role: exp.role,
-          start_date: exp.start_date || new Date().toISOString().split('T')[0],
-          end_date: exp.end_date || null,
-          description: exp.description || ''
-        }));
-        const { error } = await supabase.from('work_experience').insert(payloadExp);
-        if (error) throw error;
-      }
 
       setSuccessMsg('¡Perfil profesional completado y guardado exitosamente!');
       setTimeout(() => {

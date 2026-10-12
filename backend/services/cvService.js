@@ -13,9 +13,19 @@
  * o lanza errores con `.status` y `.code` para que el controlador los traduzca.
  */
 
-import { SYSTEM_PROMPT_CV, SYSTEM_PROMPT_CV_PARSE } from '../lib/prompts.js';
+import { SYSTEM_PROMPT_CV } from '../lib/prompts.js';
 import { generateWithFallback }                      from '../lib/AIProviderService.js';
+import { SYSTEM_PROMPT_CV_IMPORT_FAITHFUL } from '../lib/cvImportPrompt.js';
+import { cvImportTokenBudget, parseImportedCv } from './cvImportData.js';
+import { importedCvJsonSchema } from '../validators/cvValidator.js';
+import { fullProfileUpdateSchema } from '../validators/profileValidator.js';
 import * as cvRepo                                   from '../repositories/cvRepository.js';
+import {
+  CV_TECHNICAL_SKILL_CATEGORIES,
+  aiGeneratedCvSchema,
+  generatedCvJsonSchema,
+  generatedCvSchema,
+} from '../validators/cvValidator.js';
 
 // ---------------------------------------------------------------------------
 // Helpers privados
@@ -47,39 +57,355 @@ function appError(message, status, code) {
  * @param {object} userInputData - Objeto consolidado con academic/work del usuario
  * @returns {object}             - Objeto cvJson con la misma forma que la IA devuelve
  */
-function buildFallbackCv(profile, userInputData) {
-  const careerName = userInputData.personal_info?.career || profile.career || '';
-  const roleName   = userInputData.personal_info?.target_role || profile.target_role || '';
+const SKILL_CATEGORY_PATTERNS = {
+  backend: /\b(node(?:\.js)?|express|java|spring|python|django|flask|php|laravel|c#|\.net|golang|go|ruby|rails|nestjs)\b/i,
+  cloud: /\b(aws|azure|gcp|cloud|lambda|cloudflare|firebase)\b/i,
+  architecture: /\b(architecture|arquitectura|microservices|microservicios|solid|ddd|clean architecture|event driven|patrones de dise[nñ]o)\b/i,
+  databases: /\b(sql|postgres(?:ql)?|mysql|mariadb|mongodb|redis|oracle|sqlite|database|base de datos|supabase)\b/i,
+  integration: /\b(rest|graphql|soap|api|kafka|rabbitmq|webhook|integraci[oó]n)\b/i,
+  testing: /\b(jest|vitest|mocha|junit|pytest|cypress|playwright|selenium|testing|pruebas?)\b/i,
+  devops: /\b(docker|kubernetes|terraform|jenkins|github actions|gitlab ci|ci\/?cd|devops|git)\b/i,
+  security: /\b(oauth|jwt|owasp|security|seguridad|pentest|iam)\b/i,
+  frontend: /\b(react|angular|vue|svelte|javascript|typescript|html|css|tailwind|bootstrap|frontend|next(?:\.js)?)\b/i,
+};
 
+const SKILL_ALIASES = [
+  ['javascript', 'js'],
+  ['typescript', 'ts'],
+  ['node', 'node js', 'nodejs'],
+  ['postgres', 'postgresql'],
+  ['amazon web services', 'aws'],
+  ['google cloud platform', 'gcp'],
+  ['continuous integration continuous delivery', 'ci cd'],
+  ['rest api', 'restful api', 'api rest'],
+];
+
+const KNOWN_TECHNOLOGY_ALIASES = [
+  ['node', 'node js', 'nodejs'], ['express'], ['java'], ['spring'], ['python'], ['django'],
+  ['flask'], ['php'], ['laravel'], ['c#'], ['net'], ['go', 'golang'], ['ruby'], ['rails'],
+  ['nestjs'], ['aws', 'amazon web services'], ['azure'], ['gcp', 'google cloud platform'],
+  ['lambda'], ['cloudflare'], ['firebase'], ['sql'], ['postgres', 'postgresql'], ['mysql'],
+  ['mariadb'], ['mongodb'], ['redis'], ['oracle'], ['sqlite'], ['supabase'], ['graphql'],
+  ['soap'], ['kafka'], ['rabbitmq'], ['jest'], ['vitest'], ['mocha'], ['junit'], ['pytest'],
+  ['cypress'], ['playwright'], ['selenium'], ['docker'], ['kubernetes'], ['terraform'],
+  ['jenkins'], ['oauth'], ['jwt'], ['owasp'], ['react'], ['angular'], ['vue'], ['svelte'],
+  ['javascript', 'js'], ['typescript', 'ts'], ['html'], ['css'], ['tailwind'], ['bootstrap'],
+  ['next js', 'nextjs'],
+];
+
+function text(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function normalize(value) {
+  return text(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9+#.]+/g, ' ')
+    .replace(/\./g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function uniqueStrings(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : [])
+    .map((value) => text(value).trim())
+    .filter((value) => {
+      const key = normalize(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function emptyTechnicalSkills() {
+  return Object.fromEntries(CV_TECHNICAL_SKILL_CATEGORIES.map((category) => [category, []]));
+}
+
+function categorizeSkills(skills) {
+  const categorized = emptyTechnicalSkills();
+  for (const skill of uniqueStrings(skills)) {
+    const category = Object.entries(SKILL_CATEGORY_PATTERNS)
+      .find(([, pattern]) => pattern.test(skill))?.[0] || 'other';
+    categorized[category].push(skill);
+  }
+  return categorized;
+}
+
+function orderedSkillCategories(technicalSkills, preferredOrder = CV_TECHNICAL_SKILL_CATEGORIES) {
+  const preferred = uniqueStrings(preferredOrder)
+    .filter((category) => CV_TECHNICAL_SKILL_CATEGORIES.includes(category));
+  const missing = CV_TECHNICAL_SKILL_CATEGORIES.filter((category) => !preferred.includes(category));
+  return [...preferred, ...missing].sort((left, right) => {
+    const leftHasSkills = technicalSkills[left]?.length > 0 ? 0 : 1;
+    const rightHasSkills = technicalSkills[right]?.length > 0 ? 0 : 1;
+    return leftHasSkills - rightHasSkills;
+  });
+}
+
+function skillOrderFromTarget(technicalSkills, targetJobDescription) {
+  const target = normalize(targetJobDescription);
+  if (!target) return orderedSkillCategories(technicalSkills);
+
+  return [...CV_TECHNICAL_SKILL_CATEGORIES].sort((left, right) => {
+    const score = (category) => (technicalSkills[category] || []).reduce(
+      (total, skill) => total + (includesNormalizedPhrase(target, normalize(skill)) ? 2 : 0),
+      SKILL_CATEGORY_PATTERNS[category]?.test(targetJobDescription) ? 1 : 0
+    );
+    return score(right) - score(left);
+  });
+}
+
+function buildSupportedHeadline(userInputData, technicalSkills) {
+  const role = text(userInputData.personal_info?.target_role || userInputData.personal_info?.career).trim();
+  const highlights = orderedSkillCategories(technicalSkills)
+    .flatMap((category) => technicalSkills[category])
+    .slice(0, 3);
+  return uniqueStrings([role, ...highlights]).join(' | ');
+}
+
+function sourceAcademicRecord(record) {
   return {
-    professional_summary:
-      userInputData.personal_info?.bio ||
-      profile.bio ||
-      [
-        careerName && `Egresado de ${careerName}`,
-        roleName   && `orientado a desempeñarse como ${roleName}`,
-      ]
-        .filter(Boolean)
-        .join(', ') + '.',
-    work_experience: (userInputData.work_experience || []).map((w) => ({
-      company:            w.company || '',
-      role:               w.role || '',
-      period:             w.period || [w.start_date, w.end_date].filter(Boolean).join(' - '),
-      impact_description: w.description || '',
-      achievements:       Array.isArray(w.achievements) ? w.achievements : [],
-    })),
-    academic_background: (userInputData.academic_background || []).map((a) => ({
-      institution: a.institution || '',
-      degree:      a.degree || '',
-      period:      a.period || [a.start_date, a.end_date].filter(Boolean).join(' - '),
-      relevance:   a.description || '',
-    })),
-    skills_categories: {
-      languages_and_frameworks:    userInputData.skills?.technical || profile.technical_skills || [],
-      tools_and_databases:         [],
-      methodologies_and_soft_skills: userInputData.skills?.soft || profile.soft_skills || [],
-    },
+    institution: text(record.institution),
+    degree:      text(record.degree),
+    start_date:  text(record.start_date),
+    end_date:    text(record.end_date),
+    description: text(record.description),
   };
+}
+
+function sourceWorkRecord(record, relevance = 'low', bullets) {
+  const sourceBullets = uniqueStrings([
+    ...(Array.isArray(record.achievements) ? record.achievements : []),
+    record.description,
+  ]);
+  const limits = { high: 6, medium: 3, low: 1 };
+  const selectedBullets = uniqueStrings(bullets === undefined ? sourceBullets : bullets).slice(0, limits[relevance]);
+  const compatibleRelevance = selectedBullets.length === 0
+    ? 'low'
+    : relevance === 'high' && selectedBullets.length < 3
+      ? 'medium'
+      : relevance;
+  return {
+    source_id:  text(record.id),
+    company:    text(record.company),
+    role:       text(record.role),
+    start_date: text(record.start_date),
+    end_date:   text(record.end_date),
+    relevance: compatibleRelevance,
+    bullets: selectedBullets.slice(0, limits[compatibleRelevance]),
+  };
+}
+
+function getCertifications(profile) {
+  return uniqueStrings((profile.certifications || []).map((certification) =>
+    typeof certification === 'string'
+      ? certification
+      : certification?.name || certification?.title || certification?.certification || ''
+  ));
+}
+
+function sourceCorpus(profile, userInputData) {
+  return [
+    userInputData.personal_info?.bio || profile.bio,
+    userInputData.personal_info?.career,
+    userInputData.personal_info?.target_role,
+    ...(userInputData.skills?.technical || []),
+    ...(userInputData.skills?.soft || []),
+    ...(userInputData.certifications || getCertifications(profile)),
+    ...(userInputData.work_experience || []).flatMap((record) => [
+      record.description,
+      ...(Array.isArray(record.achievements) ? record.achievements : []),
+    ]),
+    ...(userInputData.academic_background || []).map((record) => record.description),
+  ].filter(Boolean).join(' ');
+}
+
+function isSupported(value, corpus) {
+  const candidate = normalize(value);
+  const normalizedCorpus = ` ${normalize(corpus)} `;
+  if (!candidate) return false;
+  if (normalizedCorpus.includes(` ${candidate} `)) return true;
+  const aliases = SKILL_ALIASES.find((group) => group.includes(candidate));
+  return Boolean(aliases?.some((alias) => normalizedCorpus.includes(` ${alias} `)));
+}
+
+function includesNormalizedPhrase(normalizedText, phrase) {
+  return ` ${normalizedText} `.includes(` ${phrase} `);
+}
+
+function hasUnsupportedTechnology(value, corpus) {
+  const normalizedValue = normalize(value);
+  const normalizedCorpus = normalize(corpus);
+  return KNOWN_TECHNOLOGY_ALIASES.some((aliases) =>
+    aliases.some((alias) => includesNormalizedPhrase(normalizedValue, alias)) &&
+    !aliases.some((alias) => includesNormalizedPhrase(normalizedCorpus, alias))
+  );
+}
+
+function hasUnsupportedMetric(value, corpus) {
+  const metrics = text(value).match(/\b\d+(?:[.,]\d+)?%?/g) || [];
+  const sourceMetrics = new Set(text(corpus).match(/\b\d+(?:[.,]\d+)?%?/g) || []);
+  return metrics.some((metric) => !sourceMetrics.has(metric));
+}
+
+const EVIDENCE_STOP_WORDS = new Set([
+  'para', 'como', 'desde', 'entre', 'sobre', 'mediante', 'utilizando', 'participando',
+  'experiencia', 'soluciones', 'sistemas',
+  'aplicaciones', 'servicios', 'proyectos', 'equipo', 'entornos', 'procesos',
+]);
+
+function evidenceTerms(value) {
+  return normalize(value).split(' ')
+    .filter((term) => term.length >= 4 && !EVIDENCE_STOP_WORDS.has(term));
+}
+
+function hasEvidenceOverlap(value, evidence) {
+  const sourceTerms = evidenceTerms(evidence);
+  const claimTerms = evidenceTerms(value);
+  if (claimTerms.length === 0) return true;
+  const matches = claimTerms.filter((claim) => sourceTerms.some((source) =>
+    claim === source || (claim.length >= 6 && source.length >= 6 && claim.slice(0, 6) === source.slice(0, 6))
+  )).length;
+  return matches >= Math.min(2, claimTerms.length) && matches / claimTerms.length >= 0.35;
+}
+
+function hasUnsupportedNamedTerm(value, evidence) {
+  const normalizedEvidence = ` ${normalize(evidence)} `;
+  const namedTerms = [...text(value).matchAll(/\b[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9.+#/-]{1,}\b/g)];
+  return namedTerms.some((match) => {
+    if (match.index === 0) return false;
+    const term = normalize(match[0]);
+    return term.length > 1 && !normalizedEvidence.includes(` ${term} `);
+  });
+}
+
+function sanitizeBullets(record, bullets) {
+  const evidence = [
+    record.description,
+    ...(Array.isArray(record.achievements) ? record.achievements : []),
+  ].filter(Boolean).join(' ');
+  return uniqueStrings(bullets).filter((bullet) =>
+    !hasUnsupportedTechnology(bullet, evidence) &&
+    !hasUnsupportedNamedTerm(bullet, evidence) &&
+    !hasUnsupportedMetric(bullet, evidence) &&
+    hasEvidenceOverlap(bullet, evidence)
+  );
+}
+
+function filterSupported(values, corpus, alreadyUsed = new Set()) {
+  return uniqueStrings(values).filter((value) => {
+    const key = normalize(value);
+    if (alreadyUsed.has(key) || !isSupported(value, corpus)) return false;
+    alreadyUsed.add(key);
+    return true;
+  });
+}
+
+function relevanceFromSource(record, targetJobDescription) {
+  const targetWords = new Set(normalize(targetJobDescription).split(' ').filter((word) => word.length >= 4));
+  if (targetWords.size === 0) return 'low';
+  const recordWords = new Set(normalize([
+    record.role,
+    record.description,
+    ...(record.achievements || []),
+  ].join(' ')).split(' '));
+  const matches = [...targetWords].filter((word) => recordWords.has(word)).length;
+  return matches >= 3 ? 'high' : matches >= 1 ? 'medium' : 'low';
+}
+
+/** Fallback honesto que cumple exactamente el contrato persistido. */
+export function buildFallbackCv(profile, userInputData, targetJobDescription = '') {
+  const roleName = userInputData.personal_info?.target_role || profile.target_role || '';
+  const careerName = userInputData.personal_info?.career || profile.career || '';
+  const technicalSkills = categorizeSkills(userInputData.skills?.technical || profile.technical_skills || []);
+  return {
+    headline: buildSupportedHeadline(userInputData, technicalSkills) || roleName || careerName,
+    professional_summary: userInputData.personal_info?.bio || profile.bio || '',
+    work_experience: (userInputData.work_experience || []).map((record) =>
+      sourceWorkRecord(record, relevanceFromSource(record, targetJobDescription))
+    ),
+    academic_background: (userInputData.academic_background || []).map(sourceAcademicRecord),
+    technical_skills: technicalSkills,
+    technical_skill_order: skillOrderFromTarget(technicalSkills, targetJobDescription),
+    soft_skills: uniqueStrings(userInputData.skills?.soft || profile.soft_skills || []),
+    certifications: uniqueStrings(userInputData.certifications || getCertifications(profile)),
+  };
+}
+
+/** Valida el JSON de IA y repone todos los campos inmutables desde la fuente. */
+export function parseAndReconcileGeneratedCv(rawJson, profile, userInputData) {
+  const parsedJson = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+  const generated = aiGeneratedCvSchema.parse(parsedJson);
+  const sourceWork = userInputData.work_experience || [];
+  const usedSourceIndexes = new Set();
+  const reconciledWork = [];
+
+  for (const generatedRecord of generated.work_experience) {
+    let sourceIndex = sourceWork.findIndex((record, index) =>
+      !usedSourceIndexes.has(index) && text(record.id) === generatedRecord.source_id
+    );
+    if (sourceIndex < 0 && generatedRecord.source_id === '') {
+      sourceIndex = sourceWork.findIndex((record, index) =>
+        !usedSourceIndexes.has(index) && text(record.id) === '' &&
+        normalize(record.company) === normalize(generatedRecord.company) &&
+        normalize(record.role) === normalize(generatedRecord.role)
+      );
+    }
+    if (sourceIndex < 0) continue;
+    usedSourceIndexes.add(sourceIndex);
+    reconciledWork.push(sourceWorkRecord(
+      sourceWork[sourceIndex],
+      generatedRecord.relevance,
+      sanitizeBullets(sourceWork[sourceIndex], generatedRecord.bullets)
+    ));
+  }
+
+  sourceWork.forEach((record, index) => {
+    if (!usedSourceIndexes.has(index)) reconciledWork.push(sourceWorkRecord(record));
+  });
+
+  const corpus = sourceCorpus(profile, userInputData);
+  const usedSkills = new Set();
+  let technicalSkills = emptyTechnicalSkills();
+  for (const category of CV_TECHNICAL_SKILL_CATEGORIES) {
+    technicalSkills[category] = filterSupported(generated.technical_skills[category], corpus, usedSkills);
+  }
+  if (Object.values(technicalSkills).every((skills) => skills.length === 0)) {
+    technicalSkills = categorizeSkills(userInputData.skills?.technical || []);
+  }
+
+  const result = {
+    headline: buildSupportedHeadline(userInputData, technicalSkills),
+    professional_summary: !generated.professional_summary.trim() ||
+      hasUnsupportedTechnology(generated.professional_summary, corpus) ||
+      hasUnsupportedNamedTerm(generated.professional_summary, corpus) ||
+      hasUnsupportedMetric(generated.professional_summary, corpus) ||
+      !hasEvidenceOverlap(generated.professional_summary, corpus)
+      ? userInputData.personal_info?.bio || profile.bio || ''
+      : generated.professional_summary,
+    work_experience: reconciledWork,
+    academic_background: (userInputData.academic_background || []).map(sourceAcademicRecord),
+    technical_skills: technicalSkills,
+    technical_skill_order: orderedSkillCategories(technicalSkills, generated.technical_skill_order),
+    soft_skills: filterSupported(generated.soft_skills, corpus),
+    certifications: filterSupported(
+      generated.certifications,
+      uniqueStrings(userInputData.certifications || getCertifications(profile)).join(' ')
+    ),
+  };
+  return generatedCvSchema.parse(result);
+}
+
+export function buildCvUserPrompt(userInputData, targetJobDescription, focusDescription) {
+  return [
+    `TARGET_JOB_DESCRIPTION:\n${targetJobDescription || '(vacante no proporcionada)'}`,
+    `ENFOQUE DE PRESENTACION:\n${focusDescription}`,
+    `DATOS DEL CANDIDATO (unica fuente factual):\n${JSON.stringify(userInputData)}`,
+    'Genera el CV aplicando matching ATS y todas las reglas de fidelidad del sistema.',
+  ].join('\n\n');
 }
 
 /**
@@ -225,6 +551,9 @@ export async function generateCv({
   cv_focus,
   excluded_experience_ids,
   excluded_skills,
+  candidate_data,
+  target_job_description,
+  aiGenerate = generateWithFallback,
 }) {
   // 1. Obtener perfil
   const { data: profile, error: profileError } = await cvRepo.getProfile(db, profileId);
@@ -240,23 +569,34 @@ export async function generateCv({
   ]);
 
   // 3. Consolidar la información estructurada aplicando filtros
+  const excludedSkillKeys = new Set((excluded_skills || []).map(normalize));
+  const excludedExperienceIds = new Set((excluded_experience_ids || []).map(text));
+  const targetJobDescription = text(target_job_description).trim() || text(profile.target_job_description).trim();
+  const candidateTechnicalSkills = candidate_data?.skills?.technical || profile.technical_skills || [];
+  const candidateSoftSkills = candidate_data?.skills?.soft || profile.soft_skills || [];
+  const candidateWork = candidate_data?.work_experience || work;
+  const candidateAcademic = candidate_data?.academic_background || academic;
+  const candidateCertifications = candidate_data?.certifications || getCertifications(profile);
   const userInputData = {
     personal_info: {
       first_name:  profile.first_name,
       last_name:   profile.last_name,
       email:       profile.email,
       phone:       profile.phone,
-      career:      profile.career,
-      target_role: custom_target_role || profile.target_role,
-      bio:         profile.bio,
+      career:      candidate_data?.personal_info?.career || profile.career,
+      target_role: custom_target_role || candidate_data?.personal_info?.target_role || profile.target_role,
+      bio:         candidate_data?.personal_info?.bio ?? profile.bio,
       cv_focus:    cv_focus || 'ATS',
     },
     skills: {
-      technical: (profile.technical_skills || []).filter(s => !(excluded_skills || []).includes(s)),
-      soft:      (profile.soft_skills || []).filter(s => !(excluded_skills || []).includes(s)),
+      technical: candidateTechnicalSkills.filter((skill) => !excludedSkillKeys.has(normalize(skill))),
+      soft:      candidateSoftSkills.filter((skill) => !excludedSkillKeys.has(normalize(skill))),
     },
-    academic_background: academic,
-    work_experience:     work.filter(w => !(excluded_experience_ids || []).includes(w.id)),
+    certifications: candidateCertifications,
+    academic_background: candidateAcademic,
+    work_experience: candidateWork
+      .map((record, index) => ({ ...record, id: record.id || `candidate-exp-${index}` }))
+      .filter((record) => !excludedExperienceIds.has(text(record.id))),
   };
 
   // 4. Invocar a la IA; fallback honesto si la IA no está disponible
@@ -269,24 +609,25 @@ export async function generateCv({
       : focusLabel === 'senior' ? 'senior (resaltando impacto cuantificable, mentoría, toma de decisiones)'
       : 'ATS estándar de alto impacto';
 
-    const cvJsonText = await generateWithFallback({
+    const cvJsonText = await aiGenerate({
       useCase:   'cv_generation',
       messages:  [
         { role: 'system', content: SYSTEM_PROMPT_CV },
-        { role: 'user',   content: `Datos estructurados del candidato:\n${JSON.stringify(userInputData)}\n\nPor favor, genera y redacta el CV adaptando el resumen profesional y la descripción de logros/proyectos para tener un enfoque: ${focusDescription}.` },
+        { role: 'user', content: buildCvUserPrompt(userInputData, targetJobDescription, focusDescription) },
       ],
       db,
       userId,
       jsonMode:  true,
-      maxTokens: 1500,
+      responseSchema: generatedCvJsonSchema,
+      maxTokens: 4000,
     });
-    cvJson = JSON.parse(cvJsonText);
+    cvJson = parseAndReconcileGeneratedCv(cvJsonText, profile, userInputData);
   } catch (apiError) {
     console.warn(
       '⚠️ Error en generación de CV por IA. Usando SOLO los datos reales del perfil como respaldo. Detalle:',
       apiError.message
     );
-    cvJson = buildFallbackCv(profile, userInputData);
+    cvJson = generatedCvSchema.parse(buildFallbackCv(profile, userInputData, targetJobDescription));
   }
 
   // 5. Guardar en la base de datos.
@@ -294,7 +635,7 @@ export async function generateCv({
   // supabase/migration_fix_all.sql pendiente), se reintenta sin esa columna
   // para no bloquear la generación: el CV se guarda con los campos que sí
   // existen. profile_id y cv_data son parte del esquema base y nunca se omiten.
-  const defaultTitle = `CV ${profile.first_name || 'Egresado'} - ${profile.target_role || profile.career || 'TI'}`;
+  const defaultTitle = `CV ${profile.first_name || 'Egresado'} - ${custom_target_role || profile.target_role || profile.career || 'TI'}`;
   const insertPayload = {
     profile_id:     profileId,
     cv_data:        cvJson,
@@ -351,9 +692,8 @@ export async function generateCv({
 /**
  * Parsea el texto de un CV con IA y actualiza el perfil del usuario.
  *
- * Si la IA falla, usa el extractor de regex local. Los fallos de persistencia
- * (perfil, academic_background, work_experience) se loguean pero no bloquean
- * la respuesta: el usuario recibe siempre los datos parseados.
+ * La importación exige IA y valida el contrato. El guardado es atómico;
+ * los errores bloquean la operación y no se presentan como éxito.
  *
  * @param {object} params
  * @param {object} params.db        - Cliente Supabase autenticado (req.db)
@@ -362,56 +702,39 @@ export async function generateCv({
  * @param {string} params.cvText
  * @returns {Promise<{ parsedData: object }>}
  */
-export async function parseCv({ db, userId, profileId, cvText }) {
-  // 1. Invocar a la IA; fallback de regex si la IA no está disponible
-  const { parsedData } = await parseCvRaw({ db, userId, cvText });
+export async function parseCv({ db, userId, profileId, cvText, generate = generateWithFallback }) {
+  const { parsedData } = await parseCvRaw({ db, userId, cvText, generate });
+  const { data: currentProfile, error: profileError } = await cvRepo.getProfile(db, profileId);
+  if (profileError || !currentProfile) throw appError('No se pudo leer el perfil antes de importar. No se guardó ningún dato.', 404, 'PROFILE_REQUIRED');
 
-  // 2. Actualizar perfil (fallo suave: se loguea pero no bloquea la respuesta)
-  //
-  // Solo se envían al UPDATE los campos que tienen un valor real extraído.
-  // Si un campo quedó vacío ("" o []) no lo escribimos para evitar pisar datos
-  // reales que el usuario ya tenía en su perfil con valores en blanco.
   const profileUpdate = {};
-  if (parsedData.first_name)                    profileUpdate.first_name       = parsedData.first_name;
-  if (parsedData.last_name)                     profileUpdate.last_name        = parsedData.last_name;
-  if (parsedData.phone)                         profileUpdate.phone            = parsedData.phone;
-  if (parsedData.career)                        profileUpdate.career           = parsedData.career;
-  if (parsedData.target_role)                   profileUpdate.target_role      = parsedData.target_role;
-  if (parsedData.bio)                           profileUpdate.bio              = parsedData.bio;
-  if (parsedData.technical_skills?.length > 0) profileUpdate.technical_skills = parsedData.technical_skills;
-  if (parsedData.soft_skills?.length > 0)      profileUpdate.soft_skills      = parsedData.soft_skills;
-
-  if (Object.keys(profileUpdate).length > 0) {
-    const { error: profileUpdateError } = await cvRepo.updateProfile(db, profileId, profileUpdate);
-    if (profileUpdateError) {
-      console.error('Error actualizando perfil con datos del parser:', profileUpdateError);
-    }
+  for (const field of ['first_name', 'last_name', 'phone', 'location', 'career', 'bio']) {
+    if (parsedData[field]?.trim()) profileUpdate[field] = parsedData[field];
   }
-
-  // 3. Reemplazar formación académica si el parser extrajo registros
-  if (parsedData.academic_background && parsedData.academic_background.length > 0) {
-    const { error: acadError } = await cvRepo.replaceAcademicBackground(
-      db,
-      profileId,
-      parsedData.academic_background
-    );
-    if (acadError) {
-      console.warn('[cvService] Advertencia: no se pudo actualizar la formación académica:', acadError);
-    }
+  for (const field of ['target_role', 'target_job_description']) {
+    if (!currentProfile[field]?.trim() && parsedData[field]?.trim()) profileUpdate[field] = parsedData[field];
   }
+  if (parsedData.technical_skills.length) profileUpdate.technical_skills = parsedData.technical_skills;
+  if (parsedData.soft_skills.length) profileUpdate.soft_skills = parsedData.soft_skills;
 
-  // 4. Reemplazar experiencia laboral si el parser extrajo registros
-  if (parsedData.work_experience && parsedData.work_experience.length > 0) {
-    const { error: workError } = await cvRepo.replaceWorkExperience(
-      db,
-      profileId,
-      parsedData.work_experience
-    );
-    if (workError) {
-      console.warn('[cvService] Advertencia: no se pudo actualizar la experiencia laboral:', workError);
-    }
-  }
-
+  // Empty import sections must retain existing records. The RPC commits all
+  // three sections together or rolls back; no delete-then-insert soft failure.
+  const academic = parsedData.academic_background.length ? parsedData.academic_background
+    : await cvRepo.getAcademicBackground(db, profileId);
+  const work = parsedData.work_experience.length ? parsedData.work_experience
+    : await cvRepo.getWorkExperience(db, profileId);
+  const validation = fullProfileUpdateSchema.safeParse({
+    profile: profileUpdate,
+    academic_background: academic.map(({ institution, degree, start_date, end_date, description }) => ({ institution, degree, start_date, end_date, description })),
+    work_experience: work.map(({ company, role, start_date, end_date, description, achievements }) => ({ company, role, start_date, end_date, description, achievements })),
+  });
+  if (!validation.success) throw appError('Revisa los campos y fechas del CV antes de guardar. No se guardó ningún dato.', 422, 'CV_IMPORT_REVIEW_REQUIRED');
+  const { error } = await db.rpc('replace_current_user_profile_data', {
+    p_profile: validation.data.profile,
+    p_academic: validation.data.academic_background,
+    p_work: validation.data.work_experience,
+  });
+  if (error) throw appError('No se pudo guardar el perfil importado. La operación fue cancelada sin reemplazar parcialmente tus datos.', 500, 'CV_IMPORT_SAVE_FAILED');
   return { parsedData };
 }
 
@@ -426,30 +749,24 @@ export async function parseCv({ db, userId, profileId, cvText }) {
  * @param {string} params.cvText
  * @returns {Promise<{ parsedData: object }>}
  */
-export async function parseCvRaw({ db, userId, cvText }) {
-  let parsedData;
+export async function parseCvRaw({ db, userId, cvText, generate = generateWithFallback }) {
+  const maxTokens = cvImportTokenBudget(cvText);
+  let raw;
   try {
-    const parsedJsonText = await generateWithFallback({
-      useCase:   'cv_generation',
-      messages:  [
-        { role: 'system', content: SYSTEM_PROMPT_CV_PARSE },
-        { role: 'user',   content: cvText },
+    raw = await generate({
+      useCase: 'cv_generation',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT_CV_IMPORT_FAITHFUL },
+        { role: 'user', content: JSON.stringify({ cv_document: cvText }) },
       ],
-      db,
-      userId,
-      jsonMode:  true,
-      maxTokens: 1500,
+      db, userId, jsonMode: true, maxTokens,
+      responseSchema: importedCvJsonSchema,
     });
-    parsedData = JSON.parse(parsedJsonText);
-  } catch (apiError) {
-    console.warn(
-      '⚠️ Advertencia: Error en parser de OpenAI, activando Extractor de Regex Local. Detalles:',
-      apiError.message
-    );
-    parsedData = buildFallbackParsedData(cvText);
+  } catch {
+    // No silent regex fallback: it omits experience and appears successful.
+    throw appError('No se pudo importar el CV con IA. No se modificó tu formulario; revisa tu proveedor y vuelve a intentarlo.', 502, 'CV_IMPORT_AI_UNAVAILABLE');
   }
-
-  return { parsedData };
+  return { parsedData: parseImportedCv(raw, cvText) };
 }
 
 /**

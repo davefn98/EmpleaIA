@@ -14,6 +14,7 @@ create table public.profiles (
     phone text,
     career text not null, -- Carrera técnica/universitaria
     target_role text not null, -- Puesto objetivo (ej. Junior Backend Developer)
+    target_job_description text, -- Descripcion completa de la vacante objetivo
     bio text,
     technical_skills text[] default '{}'::text[],
     soft_skills text[] default '{}'::text[]
@@ -89,7 +90,7 @@ create table public.interview_messages (
 ALTER TABLE public.interviews DROP CONSTRAINT IF EXISTS interviews_status_check;
 ALTER TABLE public.interviews
   ADD CONSTRAINT interviews_status_check
-  CHECK (status IN ('active', 'completed', 'completed_early', 'pending_ai_feedback', 'failed_to_start'));
+  CHECK (status IN ('active', 'paused', 'completed', 'completed_early', 'pending_ai_feedback', 'failed_to_start', 'abandoned'));
 
 -- 2. Migrar registros existentes al nuevo nombre de estado
 UPDATE public.interviews SET status = 'active' WHERE status = 'in_progress';

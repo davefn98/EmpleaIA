@@ -1,5 +1,4 @@
-import React from 'react';
-import { Save, CheckCircle, XCircle, AlertCircle, ChevronLeft, User, Briefcase, GraduationCap, Wrench } from 'lucide-react';
+import { Save, CheckCircle, AlertCircle, ChevronLeft, User, Briefcase, GraduationCap, Wrench } from 'lucide-react';
 
 export default function ProfileSummary({ data, experienceList = [], educationList = [], techSkills = [], softSkills = [], onSave, onPrev, saving }) {
   const hasPersonalInfo = data.first_name && data.last_name && data.phone && data.location;

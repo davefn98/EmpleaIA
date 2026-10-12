@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
-import { useNotification } from '../components/common/NotificationContext';
+import { loadUserSnapshot } from '../utils/userDataApi';
+import { useNotification } from '../components/common/notificationContext';
 import { mapError } from '../utils/errorMapper';
 import { 
   FileText, 
@@ -12,7 +13,6 @@ import {
   Loader2, 
   AlertCircle, 
   CheckCircle2, 
-  Sparkles,
   Search,
   X
 } from 'lucide-react';
@@ -57,24 +57,9 @@ export default function Drafts({ navigateTo }) {
       }
       const uid = session.user.id;
 
-      // 1. Obtener CVs — seleccionar solo columnas que existen en la tabla base.
-      //    Las columnas updated_at, status, document_title y cv_style pueden no
-      //    existir si la migración v4 aún no se ejecutó en Supabase; por eso
-      //    usamos SELECT * y accedemos de forma defensiva.
-      const { data: cvs, error: cvError } = await supabase
-        .from('generated_cvs')
-        .select('*')
-        .eq('profile_id', uid);
-
-      if (cvError) throw cvError;
-
-      // 2. Obtener Cartas de Presentación
-      const { data: letters, error: letterError } = await supabase
-        .from('cover_letters')
-        .select('*')
-        .eq('profile_id', uid);
-
-      if (letterError) throw letterError;
+      const snapshot = await loadUserSnapshot(uid);
+      const cvs = snapshot.cvs || [];
+      const letters = snapshot.letters || [];
 
       // 3. Combinar y Normalizar con acceso defensivo a columnas opcionales
       const normalizedCvs = (cvs || []).map(cv => ({

@@ -1,4 +1,3 @@
-import React from 'react';
 import { Sparkles, User, MessageCircleQuestion } from 'lucide-react';
 
 /**

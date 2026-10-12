@@ -1,14 +1,12 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import NavItem from './NavItem';
 import { getActiveNavItem, navigationGroups } from './navigation';
 import Logo from './Logo';
 
-export default function MobileDrawer({ open, pathname, user, profile, onClose, onNavigate, onSignOut }) {
+export default function MobileDrawer({ open, pathname, onClose, onNavigate }) {
   const closeButtonRef = useRef(null);
   const activeItem = getActiveNavItem(pathname);
-  const username = user?.email?.split('@')[0] || 'Usuario';
-
   useEffect(() => {
     if (!open) {
       return undefined;

@@ -46,7 +46,7 @@ export class OpenAIProvider extends BaseProvider {
    * @param {boolean} [params.jsonMode=false] - Si true, usa response_format: json_object
    * @returns {Promise<string>}
    */
-  async generateText({ apiKey, model, messages, temperature = 0.7, maxTokens, jsonMode = false }) {
+  async generateText({ apiKey, model, messages, temperature = 0.7, maxTokens, jsonMode = false, responseSchema }) {
     const client = this._buildClient(apiKey);
 
     const requestParams = {
@@ -56,7 +56,19 @@ export class OpenAIProvider extends BaseProvider {
     };
 
     if (maxTokens) requestParams.max_tokens = maxTokens;
-    if (jsonMode)  requestParams.response_format = { type: 'json_object' };
+    const supportsStructuredOutputs = requestParams.model === 'gpt-4o' ||
+      requestParams.model.startsWith('gpt-4o-mini') ||
+      requestParams.model.startsWith('gpt-4.1') ||
+      requestParams.model.startsWith('gpt-5') ||
+      /^gpt-4o-2024-(?:0[89]|1[0-2])-\d{2}$/.test(requestParams.model);
+    if (responseSchema && supportsStructuredOutputs) {
+      requestParams.response_format = {
+        type: 'json_schema',
+        json_schema: { name: 'generated_cv', strict: true, schema: responseSchema },
+      };
+    } else if (jsonMode) {
+      requestParams.response_format = { type: 'json_object' };
+    }
 
     console.log(`[OpenAIProvider] generateText → modelo: ${requestParams.model}, mensajes: ${messages.length}`);
 

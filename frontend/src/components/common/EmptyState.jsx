@@ -1,4 +1,3 @@
-import React from 'react';
 import { Plus } from 'lucide-react';
 
 export default function EmptyState({ icon: Icon, title, description, actionText, onAction }) {

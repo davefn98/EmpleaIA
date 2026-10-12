@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Menu, Sun, Moon } from 'lucide-react';
 import UserMenu from './UserMenu';
 
@@ -51,8 +51,8 @@ export default function Header({ isMobile, isSidebarCollapsed, title, subtitle, 
             >
               {/* Información del usuario (visible en sm en adelante) */}
               <div className="hidden flex-col min-w-0 sm:flex">
-                <p className="truncate text-xs font-black text-slate-900 dark:text-slate-100 leading-tight capitalize">{username}</p>
-                <p className="truncate text-[10px] font-bold text-slate-400 dark:text-slate-500 mt-0.5">{profile?.career || 'Estudiante'}</p>
+                <p className="truncate text-xs font-black text-slate-900 dark:text-slate-100 leading-tight capitalize">{profile?.display_name || username}</p>
+                <p className="truncate text-[10px] font-bold text-slate-400 dark:text-slate-500 mt-0.5">{profile?.display_career || 'Estudiante'}</p>
               </div>
 
               {/* Avatar circular */}

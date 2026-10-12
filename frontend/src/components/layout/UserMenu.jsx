@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Settings, LogOut } from 'lucide-react';
 
 export default function UserMenu({ isOpen, onClose, user, profile, onNavigate, onSignOut }) {
@@ -52,8 +52,8 @@ export default function UserMenu({ isOpen, onClose, user, profile, onNavigate, o
           {userInitial}
         </div>
         <div className="min-w-0 flex-1 text-left">
-          <p className="truncate text-xs font-black text-slate-900 dark:text-slate-100 capitalize">{username}</p>
-          <p className="truncate text-[10px] font-bold text-slate-400 dark:text-slate-500 mt-0.5">{profile?.career || 'Estudiante'}</p>
+          <p className="truncate text-xs font-black text-slate-900 dark:text-slate-100 capitalize">{profile?.display_name || username}</p>
+          <p className="truncate text-[10px] font-bold text-slate-400 dark:text-slate-500 mt-0.5">{profile?.display_career || 'Estudiante'}</p>
           <p className="truncate text-[9px] font-medium text-indigo-600 dark:text-indigo-400 mt-0.5">{user?.email}</p>
         </div>
       </div>

@@ -69,7 +69,7 @@ router.delete('/account/:userId', requireAuth, async (req, res) => {
 
     const { error } = await db.from('profiles').delete().eq('id', userId);
     if (error) {
-      console.error('[/account delete] Error:', error.message);
+      console.error('[/account delete] Error transaccional:', error.message);
       return res.status(400).json({ error: 'No se pudieron eliminar tus datos.' });
     }
 

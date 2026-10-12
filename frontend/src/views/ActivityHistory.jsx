@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../utils/supabaseClient';
-import { Clock, FileText, Mail, MessageSquare, Loader2, AlertCircle, X, ChevronRight, CheckCircle2, User, BookOpen, Briefcase, Award } from 'lucide-react';
+import { apiRequest } from '../utils/api';
+import { Clock, FileText, Mail, MessageSquare, Loader2, AlertCircle, X, ChevronRight, User, BookOpen, Briefcase, Award } from 'lucide-react';
 import InterviewConversationPanel from '../components/interview/InterviewConversationPanel';
 
 const TYPE_LABEL = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
+const STATUS_LABEL = {active:'En curso',paused:'Pausada',completed:'Completada',completed_early:'Finalizada anticipadamente',pending_ai_feedback:'Análisis de IA pendiente',failed_to_start:'No iniciada',abandoned:'Descartada'};
 const DIFFICULTY_LABEL = { basic: 'Básico', intermediate: 'Intermedio', advanced: 'Avanzado' };
 
 export default function ActivityHistory({ setActiveView }) {
@@ -11,22 +13,21 @@ export default function ActivityHistory({ setActiveView }) {
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     const load = async () => {
+      setLoading(true);
+      setError('');
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) { setLoading(false); return; }
         const uid = session.user.id;
 
-        // Cargar todo el detalle de base de datos
-        const [cvs, letters, interviews] = await Promise.all([
-          supabase.from('generated_cvs').select('id, created_at, document_title, cv_data, cv_style').eq('profile_id', uid),
-          supabase.from('cover_letters').select('id, created_at, document_title, company, letter_content, job_offer_text').eq('profile_id', uid),
-          supabase.from('interviews')
-            .select('id, created_at, completed_at, interview_type, difficulty_level, status, interview_messages(sender, message_content, evaluation, created_at)')
-            .eq('profile_id', uid),
-        ]);
+        const activity = await apiRequest(`/activity/${uid}`, 'GET');
+        const cvs = { data: activity.cvs };
+        const letters = { data: activity.letters };
+        const interviews = { data: activity.interviews };
 
         const events = [];
 
@@ -56,12 +57,14 @@ export default function ActivityHistory({ setActiveView }) {
           const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
           
           events.push({
+            id: iv.id,
             kind: 'interview',
             title: `Entrevista ${TYPE_LABEL[iv.interview_type] || iv.interview_type}`,
             date: iv.completed_at || iv.created_at,
-            meta: avg != null ? `Puntaje ${avg}/100` : (iv.status === 'active' ? 'En curso' : 'Sin evaluar'),
+            meta: avg != null ? `Puntaje ${avg}/100` : (STATUS_LABEL[iv.status] || 'Sin evaluar'),
             status: iv.status,
             messages: sortedMsgs,
+            sessionSummary: [...sortedMsgs].reverse().find(m=>m.evaluation?.session_summary)?.evaluation.session_summary || null,
             score: avg,
             interviewType: iv.interview_type,
             difficultyLevel: iv.difficulty_level || 'intermediate',
@@ -70,15 +73,21 @@ export default function ActivityHistory({ setActiveView }) {
 
         events.sort((a, b) => new Date(b.date) - new Date(a.date));
         setItems(events);
+        const requestedId=sessionStorage.getItem('empleaia_history_interview_id');
+        if(requestedId){const requested=events.find(e=>e.kind==='interview' && e.id===requestedId);if(requested)setSelectedItem(requested);sessionStorage.removeItem('empleaia_history_interview_id');}
+
       } catch (err) {
         console.error('[ActivityHistory] Error:', err);
-        setError('No se pudo cargar el historial de actividad.');
+        // Con sesión expirada api.js ya cerró sesión y App redirige al login.
+        if (err.code !== 'SESSION_EXPIRED') {
+          setError('No se pudo cargar el historial de actividad.');
+        }
       } finally {
         setLoading(false);
       }
     };
     load();
-  }, []);
+  }, [reloadKey]);
 
   // Escape key listener to close modal
   useEffect(() => {
@@ -130,10 +139,17 @@ export default function ActivityHistory({ setActiveView }) {
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-center gap-2 text-xs text-red-700 dark:bg-red-950/40 dark:border-red-900 dark:text-red-400">
             <AlertCircle className="h-4 w-4 shrink-0" /> {error}
+            <button
+              onClick={() => setReloadKey(k => k + 1)}
+              className="ml-auto shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg cursor-pointer"
+            >
+              Reintentar
+            </button>
           </div>
         )}
 
-        {items.length === 0 ? (
+        {/* Con error de carga no se muestra el estado vacío: son cosas distintas */}
+        {error ? null : items.length === 0 ? (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center text-sm text-slate-500 dark:text-slate-400">
             Aún no tienes actividad registrada. Genera un CV, una carta o realiza una entrevista para verlos aquí.
           </div>
@@ -371,11 +387,11 @@ export default function ActivityHistory({ setActiveView }) {
                   <div className="flex justify-between items-center py-1.5 gap-3">
                     <span className="text-slate-450 font-bold uppercase tracking-wider text-[9px]">Estado de entrevista</span>
                     <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${
-                      selectedItem.status === 'completed' 
+                      ['completed','completed_early'].includes(selectedItem.status) 
                         ? 'bg-emerald-50 border-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:border-emerald-900/50 dark:text-emerald-400' 
                         : 'bg-amber-50 border-amber-100 text-amber-600 dark:bg-amber-950/40 dark:border-amber-900/50 dark:text-amber-400'
                     }`}>
-                      {selectedItem.status === 'completed' ? 'Completada' : 'En curso / Activa'}
+                      {STATUS_LABEL[selectedItem.status] || 'Estado desconocido'}
                     </span>
                   </div>
 
@@ -404,6 +420,12 @@ export default function ActivityHistory({ setActiveView }) {
                     </div>
                   )}
 
+                  {selectedItem.sessionSummary && <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 p-4 space-y-2">
+                    <h4 className="text-xs font-bold">Análisis final generado con IA</h4>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">{selectedItem.sessionSummary.general_analysis}</p>
+                    <p className="text-xs text-slate-500">Valoración global adicional de IA: {selectedItem.sessionSummary.overall_score}/100.</p>
+                    {(selectedItem.sessionSummary.recommendations || []).map((r,i)=><p key={i} className="text-xs text-slate-600 dark:text-slate-300"><strong>{r.suggested_resource}</strong>: {r.reason}</p>)}
+                  </div>}
                   {/* Conversación completa de la entrevista (incluye repreguntas) */}
                   <div className="space-y-4 pt-2">
                     <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Conversación de la Entrevista</span>
