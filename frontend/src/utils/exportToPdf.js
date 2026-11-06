@@ -3,8 +3,14 @@ let html2pdfLoaderOverride = null;
 const getHtml2Pdf = async () => {
   if (html2pdfLoaderOverride) return html2pdfLoaderOverride();
 
-  const module = await import('html2pdf.js');
-  return module.default || module;
+  try {
+    const { loadPdfEngine } = await import('./pdfBrowserEngine.js');
+    return await loadPdfEngine();
+  } catch (cause) {
+    const error = new Error('No se pudo cargar el generador. Guarda el borrador, recarga la página e intenta descargarlo de nuevo.', { cause });
+    error.code = 'PDF_ENGINE_UNAVAILABLE';
+    throw error;
+  }
 };
 
 const waitForFonts = async () => {

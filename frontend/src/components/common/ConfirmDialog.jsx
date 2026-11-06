@@ -37,6 +37,7 @@ export default function ConfirmDialog({
   variant = 'warning',
   icon,
   loading = false,
+  alternateAction,
   onConfirm,
   onCancel
 }) {
@@ -96,6 +97,16 @@ export default function ConfirmDialog({
           >
             {cancelLabel}
           </button>
+          {alternateAction && (
+            <button
+              type="button"
+              onClick={alternateAction.onClick}
+              disabled={loading}
+              className="flex-1 rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:border-slate-700 dark:text-rose-300 dark:hover:bg-rose-950/30"
+            >
+              {alternateAction.label}
+            </button>
+          )}
           <button
             type="button"
             onClick={onConfirm}

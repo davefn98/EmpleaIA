@@ -1,6 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { completeImportedExperience, mergeImportedPersonal } from '../src/utils/cvImport.js';
+import { completeImportedExperience, importedCvFields, mergeImportedPersonal } from '../src/utils/cvImport.js';
+
+test('Un CV nuevo reemplaza los campos anteriores, incluidos los que llegan vacíos', () => {
+  const education = [{ institution: 'Instituto de prueba', degree: 'Desarrollo de Software' }];
+  const complete = importedCvFields({
+    first_name: 'Ana', email: 'cv@example.test', phone: '+51 900 000 000',
+    bio: 'Desarrollo APIs.', academic_background: education, technical_skills: ['JavaScript'],
+  });
+  assert.equal(complete.email, 'cv@example.test');
+  assert.equal(complete.phone, '+51 900 000 000');
+  assert.equal(complete.bio, 'Desarrollo APIs.');
+  assert.deepEqual(complete.academic_background, education);
+
+  const updated = { ...complete, ...importedCvFields({ first_name: 'Luis', phone: '', bio: ' ', academic_background: [] }) };
+  assert.equal(updated.first_name, 'Luis');
+  assert.equal(updated.email, '');
+  assert.equal(updated.phone, '');
+  assert.equal(updated.bio, '');
+  assert.deepEqual(updated.academic_background, []);
+  assert.deepEqual(updated.technical_skills, []);
+});
 
 test('La importación conserva el puesto, vacante y email autenticado existentes', () => {
   const previous = { target_role: 'Backend AWS', target_job_description: 'Integracion de APIs y AWS.', email: 'login@example.test', first_name: 'Anterior' };

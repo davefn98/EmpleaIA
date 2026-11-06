@@ -6,8 +6,9 @@ En cada experiencia, description debe contener todas sus responsabilidades y log
 achievements solo separa los logros explícitos; no inventes resultados, cifras, empresas, cargos ni habilidades. No limites el número de viñetas por relevancia.
 Conserva el resumen profesional literal en bio. first_name contiene TODOS los nombres de pila y last_name TODOS los apellidos, literalmente como aparecen en la cabecera; nunca descartes un segundo nombre.
 career es la carrera o profesión que declara la formación del documento, no la línea de titular con tecnologías separadas por barras. Conserva también la especialidad y el ciclo actual explícitos en la descripción de cada estudio.
-El esquema no tiene campo de certificaciones: conserva cada certificación explícita por su nombre COMPLETO en technical_skills, manteniendo palabras como Certificado o Certificación para distinguir credenciales de tecnologías. No omitas esa sección ni inventes emisores, fechas o acreditaciones.
+Conserva los nombres completos de las certificaciones en certifications. Usa portfolio solo si el CV identifica un enlace de portafolio. No inventes enlaces, emisores, fechas ni acreditaciones.
 Las fechas mantienen la precisión de la fuente (año, mes o fecha completa); para un empleo actual end_date es null. No inventes días ni fechas faltantes.
 target_role y target_job_description solo se extraen si el documento declara explícitamente un puesto/vacante objetivo. Un cargo histórico no es automáticamente el puesto objetivo.
 Si falta un dato usa una cadena vacía, null en end_date o un arreglo vacío, según el esquema.
-No cambies el correo del usuario ni guardes datos: solo estructura el documento para revisión humana.`;
+Extrae el correo y el teléfono de contacto tal como figuran en el CV. Deja bio vacía si el CV no incluye un resumen profesional, y academic_background vacío si no lista estudios.
+Solo estructura el contenido del CV para revisión humana.`;

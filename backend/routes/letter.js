@@ -60,6 +60,9 @@ router.post('/letter-generate', requireAuth, asyncHandler(async (req, res) => {
       status,
     });
   } catch (err) {
+    if (['DOCUMENT_AI_UNAVAILABLE', 'PROFILE_CONTEXT_UNAVAILABLE'].includes(err.code)) {
+      return fail(res, err.message, err.status || 502, err.code);
+    }
     if (err.status && err.status < 500) {
       return fail(res, err.message, err.status, err.code);
     }

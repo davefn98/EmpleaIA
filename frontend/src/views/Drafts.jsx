@@ -9,6 +9,7 @@ import {
   Trash2, 
   Eye, 
   Edit3, 
+  Copy,
   Clock, 
   Loader2, 
   AlertCircle, 
@@ -17,6 +18,7 @@ import {
   X
 } from 'lucide-react';
 import CVPreview from '../components/cv/CVPreview';
+import { CV_TEMPLATES } from '../config/cvThemes';
 import { restoreCvDocument, restoreCvTheme } from '../utils/documentDrafts';
 
 export default function Drafts({ navigateTo }) {
@@ -126,24 +128,15 @@ export default function Drafts({ navigateTo }) {
     });
   };
 
-  const handleEdit = (doc) => {
+  const handleEdit = (doc, asCopy = false) => {
     if (doc.type === 'cv') {
       localStorage.removeItem('empleaia_edit_letter_id');
       localStorage.setItem('empleaia_edit_cv_id', doc.id);
-      if (doc.style) {
-        // Cargar estilos del CV en localStorage
-        localStorage.setItem('empleaia_cv_theme_template', doc.style.template || 'classic');
-        localStorage.setItem('empleaia_cv_theme_color', doc.style.primaryColor || 'purple');
-        localStorage.setItem('empleaia_cv_theme_font', doc.style.fontFamily || 'inter');
-        localStorage.setItem('empleaia_cv_theme_fontSize', doc.style.fontSize || 'normal');
-        localStorage.setItem('empleaia_cv_theme_spacing', doc.style.spacing || 'normal');
-        localStorage.setItem('empleaia_cv_theme_headerStyle', doc.style.headerStyle || 'centered');
-        if (doc.style.visibleSections) localStorage.setItem('empleaia_cv_theme_visibleSections', JSON.stringify(doc.style.visibleSections));
-        if (doc.style.sectionOrder) localStorage.setItem('empleaia_cv_theme_sectionOrder', JSON.stringify(doc.style.sectionOrder));
-      }
+      localStorage.setItem('empleaia_edit_cv_as_copy', String(asCopy));
       navigateTo('/documents/cv');
     } else {
       localStorage.removeItem('empleaia_edit_cv_id');
+      localStorage.removeItem('empleaia_edit_cv_as_copy');
       localStorage.setItem('empleaia_edit_letter_id', doc.id);
       navigateTo('/documents/cover-letter');
     }
@@ -188,6 +181,7 @@ export default function Drafts({ navigateTo }) {
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <div className="mx-auto w-full max-w-[1600px]">
+        <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">Retoma tus documentos guardados o usa un CV como copia para crear otra versión con su contenido y diseño.</p>
         
 
 
@@ -281,7 +275,14 @@ export default function Drafts({ navigateTo }) {
                           }`}>
                             {doc.type === 'cv' ? <FileText className="h-4 w-4" /> : <Mail className="h-4 w-4" />}
                           </div>
-                          <span>{doc.title}</span>
+                          <div>
+                            <span>{doc.title}</span>
+                            {doc.type === 'cv' && (
+                              <p className="mt-0.5 font-normal text-slate-500 dark:text-slate-400">
+                                {CV_TEMPLATES.find(({ id }) => id === restoreCvTheme(doc.style).template)?.name || 'Plantilla guardada'}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="py-4 whitespace-nowrap">
@@ -315,6 +316,12 @@ export default function Drafts({ navigateTo }) {
                           >
                             <Edit3 className="h-4.5 w-4.5" />
                           </button>
+                          {doc.type === 'cv' && (
+                            <button type="button" onClick={() => handleEdit(doc, true)} className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 font-semibold text-indigo-700 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950 cursor-pointer">
+                              <Copy aria-hidden="true" className="h-4 w-4" />
+                              Usar como copia
+                            </button>
+                          )}
                           <button
                             onClick={() => handleDelete(doc.id, doc.type)}
                             className="p-2 text-slate-450 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all cursor-pointer"

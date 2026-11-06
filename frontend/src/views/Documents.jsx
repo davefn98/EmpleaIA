@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { loadUserSnapshot } from '../utils/userDataApi';
 import { apiRequest } from '../utils/api';
 import { useNotification } from '../components/common/notificationContext';
+import ProfileSectionTabs from '../components/common/ProfileSectionTabs';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 import { mapError } from '../utils/errorMapper';
 import { 
   FileText, 
@@ -19,20 +21,19 @@ import {
   Copy,
   Check,
   Sliders,
-  User,
-  Settings,
-  Briefcase,
-  GraduationCap,
-  Wrench
+  Pencil
 } from 'lucide-react';
 import CVPreview from '../components/cv/CVPreview';
+import CvContentEditor from '../components/cv/CvContentEditor';
 import ImportCvModal from '../components/documents/ImportCvModal';
-import { completeImportedExperience, mergeImportedPersonal } from '../utils/cvImport';
+import { importedCvFields } from '../utils/cvImport';
 import TemplateSelector from '../components/cv/TemplateSelector';
 import ColorSelector from '../components/cv/ColorSelector';
 import FontSelector from '../components/cv/FontSelector';
 import SectionToggle from '../components/cv/SectionToggle';
-import { restoreCvDocument, restoreCvTheme, restoreLetterDocument, updateCvDocumentData, readStoredCvTheme } from '../utils/documentDrafts';
+import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, readStoredCvTheme, cvEditorSnapshot } from '../utils/documentDrafts';
+import { protectUnsavedChanges } from '../utils/unsavedChanges';
+import { missingProfileSaveFields, profileSaveIssues } from '../utils/profileSaveIssues';
 
 const ensureItemIds = (items, prefix) => (items || []).map((item, index) => ({
   ...item,
@@ -48,23 +49,48 @@ const normalizeSkillList = (skills) => {
     .filter((skill) => typeof skill === 'string');
 };
 
-const experienceIdentity = (experience) => JSON.stringify([
-  experience.company || '',
-  experience.role || '',
-  experience.start_date || '',
-  experience.end_date || '',
-  experience.description || ''
-]);
+function cvNarrative(document, visibleSections) {
+  const cv = restoreCvDocument(document);
+  const normalizeText = (value) => value.trim().replace(/\s+/g, ' ');
+  return {
+    summary: visibleSections.professionalSummary === false ? '' : normalizeText(cv.bio),
+    bullets: visibleSections.experience === false ? [] : cv.work_experience
+      .filter((record) => !record.hidden_from_cv)
+      .flatMap(({ description }) => description.split('\n')).map(normalizeText).filter(Boolean),
+  };
+}
 
-export default function Documents({ initialDocType = 'select', navigateTo }) {
+function useTemporaryNotice(durationMs) {
+  const [notice, setNotice] = useState(null);
+  const showNotice = useCallback((value) => setNotice(value ? { value } : null), []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(null), durationMs);
+    return () => window.clearTimeout(timeout);
+  }, [notice, durationMs]);
+
+  return [notice?.value, showNotice];
+}
+
+export default function Documents({ initialDocType = 'select', navigateTo, mode = 'document' }) {
+  const isProfileEditor = mode === 'profile';
   const { toast, showConfirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useTemporaryNotice(5000);
   // Error al CARGAR los datos del wizard (red/servidor), distinto de "perfil incompleto"
   const [loadError, setLoadError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
-  const [successMsg, setSuccessMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useTemporaryNotice(4000);
+  const [profileSaveError, setProfileSaveError] = useTemporaryNotice(5000);
+  const [showMissingProfileFields, setShowMissingProfileFields] = useState(false);
+  const [profileServerErrorTabs, setProfileServerErrorTabs] = useState([]);
+  const profileSaveErrorRef = useRef(null);
+
+  useEffect(() => {
+    if (profileSaveError) profileSaveErrorRef.current?.focus();
+  }, [profileSaveError]);
 
   // Estados de Tipo de Documento: 'select' | 'cv' | 'letter'
   const [docType, setDocType] = useState(initialDocType);
@@ -76,8 +102,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   // ==========================================
   // ESTADOS DEL WIZARD DE CV (Figura 12)
   // ==========================================
-  // Pasos: 1 (Información), 2 (Experiencia), 3 (Habilidades), 4 (Vista previa), 5 (Éxito)
-  const [cvStep, setCvStep] = useState(1);
+  // Pasos: 1 (Datos del CV), 2 (Personalización), 3 (Diseño), 4 (Vista previa)
+  const [cvStep, setCvStep] = useState(isProfileEditor ? 1 : 2);
   const [cvFirstName, setCvFirstName] = useState('');
   const [cvLastName, setCvLastName] = useState('');
   const [cvEmail, setCvEmail] = useState('');
@@ -89,6 +115,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   const [cvCareer, setCvCareer] = useState('');
   const [cvTargetRole, setCvTargetRole] = useState('');
   const [cvTargetJobDescription, setCvTargetJobDescription] = useState('');
+  const [savingDefaultTarget, setSavingDefaultTarget] = useState(false);
   const [cvBio, setCvBio] = useState('');
 
   const [cvExperience, setCvExperience] = useState([]);
@@ -103,9 +130,6 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
   // Estados de Personalización del CV (evitar duplicar perfil)
   const [cvFocus, setCvFocus] = useState('ATS');
-  const [updateProfileTargetRole, setUpdateProfileTargetRole] = useState(false);
-  const [excludedExperienceIds, setExcludedExperienceIds] = useState([]);
-  const [excludedSkills, setExcludedSkills] = useState([]);
 
   // Estados de Estilo de Plantilla y Diseño del CV
   const [initialTheme] = useState(() => readStoredCvTheme(localStorage));
@@ -122,16 +146,22 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   const [generatingCv, setGeneratingCv] = useState(false);
   const [cvProgressStep, setCvProgressStep] = useState('');
   const [downloadingCv, setDownloadingCv] = useState(false);
+  const [savingCvDraft, setSavingCvDraft] = useState(false);
+  const [hasUnpersistedCv, setHasUnpersistedCv] = useState(false);
+  const [pendingCvExit, setPendingCvExit] = useState(null);
+  const confirmedCvExit = useRef(null);
   const [finalCvData, setFinalCvData] = useState(null);
+  const [showCvContentEditor, setShowCvContentEditor] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [cvId, setCvId] = useState(null);
+  const [cvTitle, setCvTitle] = useState('');
+  const [copySourceTitle, setCopySourceTitle] = useState('');
   const [letterProgressStep, setLetterProgressStep] = useState('');
 
-  // Estados de Autoguardado
+  // Instantáneas para guardado explícito y detección de cambios.
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(null);
-  const [isSavingProfileSection, setIsSavingProfileSection] = useState(false);
-  const [saveStatusText, setSaveStatusText] = useState('');
-  const [isTemporaryCvData, setIsTemporaryCvData] = useState(false);
+  const [savedTheme, setSavedTheme] = useState(initialTheme);
+  const [savedLetterSnapshot, setSavedLetterSnapshot] = useState('');
 
   // ==========================================
   // ESTADOS DE CARTA DE PRESENTACIÓN
@@ -159,14 +189,16 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     setTargetRole(saved.targetRole);
     setJobDescription(saved.jobDescription);
     setTone(saved.tone);
+    setSavedLetterSnapshot(JSON.stringify({ content: saved.content, company: saved.company, targetRole: saved.targetRole, jobDescription: saved.jobDescription, tone: saved.tone }));
   };
 
   useEffect(() => {
     let active = true;
     // Capture the selection before awaiting: StrictMode may start a second load.
-    const editCvId = docType === 'cv' ? localStorage.getItem('empleaia_edit_cv_id') : null;
+    const editCvId = !isProfileEditor && docType === 'cv' ? localStorage.getItem('empleaia_edit_cv_id') : null;
+    const useCvAsCopy = Boolean(editCvId && localStorage.getItem('empleaia_edit_cv_as_copy') === 'true');
     const editLetterId = docType === 'letter' ? localStorage.getItem('empleaia_edit_letter_id') : null;
-    const historical = docType === 'cv' ? localStorage.getItem('empleaia_historical_cv_data') : null;
+    const historical = !isProfileEditor && docType === 'cv' ? localStorage.getItem('empleaia_historical_cv_data') : null;
     const loadWizardData = async () => {
       setLoading(true);
       setErrorMsg('');
@@ -193,11 +225,16 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           applyLetterDocument(savedLetter);
           localStorage.removeItem('empleaia_edit_letter_id');
         } else if (docType === 'letter') {
-          applyLetterDocument({});
+          applyLetterDocument({
+            target_role: master.target_role,
+            job_description: master.target_job_description,
+          });
         }
 
         const savedData = savedCv?.cv_data || (historical ? JSON.parse(historical) : null);
-        const editor = savedData ? restoreCvDocument(savedData) : master;
+        const editor = savedData
+          ? restoreCvDocument(savedData)
+          : { ...master, email: master.contact_email ?? master.email ?? '' };
         setCvFirstName(editor.first_name || '');
         setCvLastName(editor.last_name || '');
         setCvEmail(editor.email || '');
@@ -208,7 +245,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         setCvCareer(editor.career || '');
         setCvTargetRole(editor.target_role || '');
         setCvTargetJobDescription(editor.target_job_description || '');
-        setCvBio(editor.bio || '');
+        const sourceBio = savedData?.source_bio ?? editor.bio ?? '';
+        setCvBio(sourceBio);
         setCvTechSkills(normalizeSkillList(editor.technical_skills));
         setCvSoftSkills(Array.isArray(editor.soft_skills) ? editor.soft_skills : []);
         setCvCertifications(Array.isArray(editor.certifications) ? editor.certifications : []);
@@ -216,17 +254,19 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         const education = ensureItemIds(editor.academic_background, 'edu');
         setCvExperience(experience);
         setCvEducation(education);
-        setExcludedExperienceIds([]);
-        setExcludedSkills([]);
         setFinalCvData(savedData);
-        setCvId(savedCv?.id || null);
-        setCvStep(savedCv ? 4 : 1);
+        setHasUnpersistedCv(useCvAsCopy);
+        setCvId(useCvAsCopy ? null : savedCv?.id || null);
+        setCvTitle(savedCv?.document_title || '');
+        setCopySourceTitle(useCvAsCopy ? savedCv?.document_title || 'CV' : '');
+        setShowCvContentEditor(Boolean(savedCv));
+        setCvStep(isProfileEditor ? 1 : savedData ? 4 : 2);
         setCvFocus(editor.cv_focus || 'ATS');
-        setIsTemporaryCvData(Boolean(savedData));
-        setLastSavedSnapshot({ ...editor, work_experience: experience, academic_background: education });
+        setLastSavedSnapshot({ ...editor, bio: sourceBio, work_experience: experience, academic_background: education });
 
         if (savedCv) {
           const style = restoreCvTheme(savedCv.cv_style);
+          setSavedTheme(style);
           setTemplate(style.template);
           setColor(style.primaryColor);
           setFont(style.fontFamily);
@@ -236,11 +276,10 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           setVisibleSections(style.visibleSections);
           setSectionOrder(style.sectionOrder);
           localStorage.removeItem('empleaia_edit_cv_id');
+          localStorage.removeItem('empleaia_edit_cv_as_copy');
           if (!savedData?.personal_info && !savedData?.first_name) {
             setSuccessMsg('Este borrador antiguo no guardó los datos personales originales. Se conserva su contenido; revisa los campos vacíos antes de guardarlo.');
           }
-        } else if (!snapshot.profile?.first_name || !snapshot.profile?.career) {
-          setErrorMsg('Por favor completa tu perfil en "Mi perfil" antes de generar documentos.');
         }
         if (historical) localStorage.removeItem('empleaia_historical_cv_data');
       } catch (err) {
@@ -251,7 +290,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     };
     loadWizardData();
     return () => { active = false; };
-  }, [docType, reloadKey]);
+  }, [docType, reloadKey, isProfileEditor, setErrorMsg, setSuccessMsg]);
 
   // Sincronizar estilo en localStorage y logs de control
   useEffect(() => {
@@ -292,8 +331,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   // ==========================================
   // FUNCIONES DE CONTROL DEL WIZARD DE CV
   // ==========================================
-  const nextStep = () => setCvStep(prev => Math.min(prev + 1, 5));
-  const prevStep = () => setCvStep(prev => Math.max(prev - 1, 1));
+  const nextStep = () => setCvStep(prev => Math.min(prev + 1, 4));
+  const prevStep = () => setCvStep(prev => Math.max(prev - 1, 2));
 
   const handleSectionToggleChange = (key, value) => {
     setVisibleSections(prev => ({
@@ -324,28 +363,22 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     return labels[secId] || secId;
   };
 
-  const persistProfileData = async ({ persistTargetRole = true } = {}) => {
+  const persistProfileData = async () => {
     if (!profile?.id) throw new Error('No se encontró ID de perfil válido.');
-    if (cvEducation.some((education) => !education.start_date) || cvExperience.some((experience) => !experience.start_date)) {
-      throw new Error('Completa las fechas de inicio antes de guardar estos datos en el perfil maestro.');
-    }
-
-    const excludedCounts = new Map();
-    cvExperience
-      .filter((experience) => excludedExperienceIds.includes(experience.id))
-      .forEach((experience) => {
-        const key = experienceIdentity(experience);
-        excludedCounts.set(key, (excludedCounts.get(key) || 0) + 1);
-      });
+    if (!isProfileEditor) throw new Error('Abre Mi perfil para actualizar tus datos profesionales.');
 
     const profilePayload = {
       first_name: cvFirstName,
       last_name: cvLastName,
+      ...(Object.hasOwn(profile, 'contact_email') || cvEmail !== (profile.email ?? '')
+        ? { contact_email: cvEmail.trim() }
+        : {}),
       phone: cvPhone,
       location: cvLocation,
+      linkedin: cvLinkedin,
+      portfolio: cvPortfolio,
+      certifications: cvCertifications,
       career: cvCareer,
-      target_role: persistTargetRole ? cvTargetRole : profile.target_role,
-      target_job_description: cvTargetJobDescription,
       bio: cvBio,
       technical_skills: cvTechSkills,
       soft_skills: cvSoftSkills
@@ -373,16 +406,6 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     const refreshed = await loadUserSnapshot(profile.id);
     const refreshedExperience = ensureItemIds(refreshed.work, 'exp');
     const refreshedEducation = ensureItemIds(refreshed.academic, 'edu');
-    const refreshedExcludedIds = refreshedExperience.reduce((ids, experience) => {
-      const key = experienceIdentity(experience);
-      const remaining = excludedCounts.get(key) || 0;
-      if (remaining > 0) {
-        ids.push(experience.id);
-        excludedCounts.set(key, remaining - 1);
-      }
-      return ids;
-    }, []);
-
     setProfile({
       ...refreshed.profile,
       work_experience: refreshedExperience,
@@ -390,13 +413,15 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     });
     setCvExperience(refreshedExperience);
     setCvEducation(refreshedEducation);
-    setExcludedExperienceIds(refreshedExcludedIds);
-    setIsTemporaryCvData(false);
     setLastSavedSnapshot({
       first_name: cvFirstName,
       last_name: cvLastName,
+      email: cvEmail,
       phone: cvPhone,
       location: cvLocation,
+      linkedin: cvLinkedin,
+      portfolio: cvPortfolio,
+      certifications: cvCertifications,
       career: cvCareer,
       target_role: cvTargetRole,
       target_job_description: cvTargetJobDescription,
@@ -407,37 +432,89 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       academic_background: refreshedEducation
     });
 
-    return { refreshedExcludedIds };
   };
 
-  const handleSaveProfileData = async (advance = false) => {
-    if (!profile?.id) {
-      toast.error("No se encontró ID de perfil válido.");
+  const defaultTargetMatches = cvTargetRole.trim() === (profile?.target_role || '').trim()
+    && cvTargetJobDescription.trim() === (profile?.target_job_description || '').trim();
+
+  const handleSaveDefaultTarget = async () => {
+    if (!profile?.id || !cvTargetRole.trim() || defaultTargetMatches || savingDefaultTarget) return;
+
+    const target = {
+      target_role: cvTargetRole.trim(),
+      target_job_description: cvTargetJobDescription.trim(),
+    };
+    setSavingDefaultTarget(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      await apiRequest(`/profile/${profile.id}`, 'PUT', target);
+      setProfile((current) => ({ ...current, ...target }));
+      setSuccessMsg('Puesto objetivo guardado para cartas y entrevistas.');
+    } catch (err) {
+      setErrorMsg(mapError(err));
+    } finally {
+      setSavingDefaultTarget(false);
+    }
+  };
+
+  const missingProfileFields = isProfileEditor
+    ? missingProfileSaveFields({
+      firstName: cvFirstName, lastName: cvLastName,
+      phone: cvPhone, contactEmail: cvEmail,
+      work: cvExperience, academic: cvEducation,
+    })
+    : [];
+  const invalidProfileTabs = showMissingProfileFields
+    ? missingProfileFields.map(({ tab }) => tab)
+    : profileServerErrorTabs;
+
+  const handleSaveProfileData = async () => {
+    setSuccessMsg('');
+    setProfileServerErrorTabs([]);
+    setShowMissingProfileFields(missingProfileFields.length > 0);
+    if (missingProfileFields.length) {
+      setActiveEditorTab(missingProfileFields[0].tab);
+      setProfileSaveError({ title: 'Es obligatorio completar los campos marcados', issues: missingProfileFields });
       return;
     }
+    setProfileSaveError(null);
     setSavingProfileData(true);
     try {
       await persistProfileData();
-
-      toast.success("¡Datos del perfil profesional guardados con éxito!");
-      if (advance) {
-        setCvStep(2);
-      }
+      setSuccessMsg('Perfil guardado.');
     } catch (err) {
-      console.error(err);
-      toast.error(err.message || "Error al sincronizar datos en la base de datos.");
+      const issues = profileSaveIssues(err.details);
+      setProfileServerErrorTabs(issues.map(({ tab }) => tab));
+      if (issues.length) setActiveEditorTab(issues[0].tab);
+      setProfileSaveError({
+        title: issues.length ? 'Revisa estos campos para guardar' : 'No se pudo guardar el perfil',
+        message: 'Tus cambios siguen en el formulario. Vuelve a intentar guardarlos.',
+        issues,
+      });
     } finally {
       setSavingProfileData(false);
     }
   };
+
+  const requiredProfileInput = (value) => ({
+    'aria-required': isProfileEditor || undefined,
+    'aria-invalid': isProfileEditor && showMissingProfileFields
+      ? !String(value ?? '').trim()
+      : undefined,
+  });
 
   const hasChanges = () => {
     if (!lastSavedSnapshot) return false;
     const current = {
       first_name: cvFirstName,
       last_name: cvLastName,
+      email: cvEmail,
       phone: cvPhone,
       location: cvLocation,
+      linkedin: cvLinkedin,
+      portfolio: cvPortfolio,
+      certifications: cvCertifications,
       career: cvCareer,
       target_role: cvTargetRole,
       target_job_description: cvTargetJobDescription,
@@ -445,37 +522,13 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       technical_skills: cvTechSkills,
       soft_skills: cvSoftSkills,
       work_experience: cvExperience,
-      academic_background: cvEducation
+      academic_background: cvEducation,
+      cv_focus: cvFocus,
     };
-    return JSON.stringify(current) !== JSON.stringify(lastSavedSnapshot);
+    return JSON.stringify(cvEditorSnapshot(current)) !== JSON.stringify(cvEditorSnapshot(lastSavedSnapshot));
   };
 
-  const handleEditorTabChange = async (newTabId) => {
-    if (isTemporaryCvData || !hasChanges() || isSavingProfileSection) {
-      setActiveEditorTab(newTabId);
-      return;
-    }
-
-    setIsSavingProfileSection(true);
-    setSaveStatusText('Guardando...');
-
-    try {
-      await persistProfileData();
-      setSaveStatusText('Cambios guardados');
-      setTimeout(() => {
-        setSaveStatusText('');
-      }, 2000);
-    } catch (err) {
-      console.error('[Autoguardado] Error al guardar perfil:', err);
-      setSaveStatusText('Error al guardar cambios');
-      setTimeout(() => {
-        setSaveStatusText('');
-      }, 3000);
-    } finally {
-      setIsSavingProfileSection(false);
-      setActiveEditorTab(newTabId);
-    }
-  };
+  // Cambiar de pestaña o avanzar nunca escribe en el perfil maestro.
 
   const addExperienceItem = () => {
     setCvExperience([...cvExperience, { id: `exp-temp-${Date.now()}-${Math.random()}`, company: '', role: '', start_date: '', end_date: '', description: '', achievements: [] }]);
@@ -486,9 +539,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const handleExperienceItemChange = (index, field, value) => {
-    const updated = [...cvExperience];
-    updated[index][field] = value;
-    setCvExperience(updated);
+    setCvExperience((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
   };
 
   const addEducationItem = () => {
@@ -500,9 +551,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const handleEducationItemChange = (index, field, value) => {
-    const updated = [...cvEducation];
-    updated[index][field] = value;
-    setCvEducation(updated);
+    setCvEducation((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item));
   };
 
   const addSkill = (type) => {
@@ -522,10 +571,14 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
   // GENERAR CV POR IA LLAMANDO A NUESTRO SERVIDOR NODE/EXPRESS (Backend)
   const handleGenerateCvAi = async () => {
-    if (generatingCv) return;
+    if (cvActionInProgress) return;
+    const previousNarrative = finalCvData ? cvNarrative(finalCvData, visibleSections) : null;
+    const { candidate, preservedContent } = prepareCvGeneration(currentEditorData(), finalCvData, visibleSections);
+    setCvStep(4);
     setGeneratingCv(true);
     setCvProgressStep('Analizando perfil...');
     setErrorMsg('');
+    setSuccessMsg('');
 
     const steps = [
       { text: 'Analizando perfil...', delay: 1000 },
@@ -542,75 +595,35 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     }, 2500);
 
     try {
-      if (updateProfileTargetRole) {
-        await apiRequest(`/profile/${profile.id}`, 'PUT', { target_role: cvTargetRole });
-      }
-
-      // Invocar a la Capa de Negocio (Backend en Puerto 5000)
-      const themeConfig = {
-        template,
-        fontFamily: font,
-        primaryColor: color,
-        fontSize,
-        spacing,
-        headerStyle,
-        visibleSections,
-        sectionOrder
-      };
-
       const data = await apiRequest('/cv-generate', 'POST', { 
         profileId: profile.id,
-        cv_style: themeConfig,
+        persist: false,
         custom_target_role: cvTargetRole,
         target_job_description: cvTargetJobDescription,
         cv_focus: cvFocus,
-        excluded_experience_ids: excludedExperienceIds,
-        excluded_skills: excludedSkills,
-        candidate_data: {
-          personal_info: {
-            first_name: cvFirstName, last_name: cvLastName, email: cvEmail,
-            phone: cvPhone, location: cvLocation, linkedin: cvLinkedin, portfolio: cvPortfolio,
-            career: cvCareer,
-            target_role: cvTargetRole,
-            bio: cvBio
+        ...(previousNarrative && {
+          previous_cv: {
+            summary: previousNarrative.summary.slice(0, 1200),
+            bullets: previousNarrative.bullets.slice(0, 12).map((bullet) => bullet.slice(0, 400)),
           },
-          skills: {
-            technical: cvTechSkills,
-            soft: cvSoftSkills
-          },
-          certifications: cvCertifications,
-          academic_background: cvEducation.map((education) => ({
-            id: education.id,
-            institution: education.institution || '',
-            degree: education.degree || '',
-            start_date: education.start_date || '',
-            end_date: education.end_date || null,
-            description: education.description || ''
-          })),
-          work_experience: cvExperience.map((experience) => ({
-            id: experience.id,
-            company: experience.company || '',
-            role: experience.role || '',
-            start_date: experience.start_date || '',
-            end_date: experience.end_date || null,
-            description: experience.description || '',
-            achievements: experience.achievements || experience.bullets || []
-          }))
-        }
+        }),
+        candidate_data: candidate
       });
 
-      if (data.success && data.cvData && data.cvId) {
-        const generated = restoreCvDocument(data.cvData);
-        setCvBio(generated.bio);
-        setCvTechSkills(generated.technical_skills);
-        setCvSoftSkills(generated.soft_skills);
-        setCvCertifications(generated.certifications);
-        setCvExperience(ensureItemIds(generated.work_experience, 'exp'));
-        setCvEducation(ensureItemIds(generated.academic_background, 'edu'));
-        setIsTemporaryCvData(true);
-        setFinalCvData(data.cvData);
-        setCvId(data.cvId);
-        setCvStep(5); // Avanzar a Éxito (Paso 5)
+      if (data.success && data.cvData) {
+        const regenerated = { ...data.cvData, ...preservedContent, manual_fields: preservedContent.manual_fields ?? [] };
+        setFinalCvData(regenerated);
+        setHasUnpersistedCv(true);
+        if (!previousNarrative) {
+          setSuccessMsg('CV generado. Ya puedes revisarlo.');
+        } else if (regenerated.manual_fields.length) {
+          setSuccessMsg('CV regenerado. Tus ediciones manuales se conservaron.');
+        } else {
+          const sameNarrative = JSON.stringify(previousNarrative) === JSON.stringify(cvNarrative(regenerated, visibleSections));
+          setSuccessMsg(sameNarrative
+            ? 'CV regenerado. El resumen y las viñetas quedaron iguales.'
+            : 'CV regenerado. Revisa la nueva redacción en la vista previa.');
+        }
       } else {
         throw new Error(data.error || 'Error generando CV con la IA');
       }
@@ -625,40 +638,35 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     }
   };
 
-  // AUTOCOMPLETAR EL WIZARD CON LOS DATOS EXTRAÍDOS POR EL MODAL DE IMPORTACIÓN
-  // (solo llena el CV actual; el perfil del usuario no se modifica)
   const applyParsedCv = (parsed) => {
     setErrorMsg('');
-    const merged = mergeImportedPersonal({
-      first_name: cvFirstName, last_name: cvLastName, phone: cvPhone,
-      location: cvLocation, linkedin: cvLinkedin, career: cvCareer,
-      target_role: cvTargetRole, target_job_description: cvTargetJobDescription, bio: cvBio,
-    }, parsed);
-    setCvFirstName(merged.first_name);
-    setCvLastName(merged.last_name);
-    // The authenticated email is immutable during import.
-    setCvPhone(merged.phone);
-    setCvLocation(merged.location);
-    setCvLinkedin(merged.linkedin);
-    setCvCareer(merged.career);
-    setCvTargetRole(merged.target_role);
-    setCvTargetJobDescription(merged.target_job_description);
-    setCvBio(merged.bio);
-    if (parsed.technical_skills?.length) setCvTechSkills(normalizeSkillList(parsed.technical_skills));
-    if (parsed.soft_skills?.length) setCvSoftSkills(parsed.soft_skills);
-    if (parsed.work_experience?.length) {
-      setCvExperience(ensureItemIds(parsed.work_experience.map(completeImportedExperience), 'exp'));
-    }
-    if (parsed.academic_background?.length) setCvEducation(ensureItemIds(parsed.academic_background, 'edu'));
-    setIsTemporaryCvData(true);
-    setSuccessMsg('Datos del CV importados para revisión. Se conservaron el puesto y la vacante existentes. Tu perfil de entrevistas no cambió; para actualizarlo importa y guarda desde Mi perfil.');
+    setProfileSaveError(null);
+    setShowMissingProfileFields(false);
+    setProfileServerErrorTabs([]);
+    const imported = importedCvFields(parsed);
+    setCvFirstName(imported.first_name);
+    setCvLastName(imported.last_name);
+    setCvEmail(imported.email);
+    setCvPhone(imported.phone);
+    setCvLocation(imported.location);
+    setCvLinkedin(imported.linkedin);
+    setCvPortfolio(imported.portfolio);
+    setCvCareer(imported.career);
+    setCvBio(imported.bio);
+    setCvTechSkills(normalizeSkillList(imported.technical_skills));
+    setCvSoftSkills(imported.soft_skills);
+    setCvCertifications(imported.certifications);
+    setCvExperience(ensureItemIds(imported.work_experience, 'exp'));
+    setCvEducation(ensureItemIds(imported.academic_background, 'edu'));
+    setSuccessMsg('Importación lista. Los datos ausentes en el CV quedan en blanco. Revisa los datos antes de pulsar Guardar perfil.');
   };
 
   // DESCARGAR PDF USANDO UTILIDAD UNIFICADA
   const handleDownloadPdf = async () => {
-    if (downloadingCv) return;
+    if (!finalCvData || cvActionInProgress) return;
     setDownloadingCv(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const { exportToPdf } = await import('../utils/exportToPdf');
       const rawFileName = `CV_${cvFirstName || 'Usuario'}_${cvLastName || ''}.pdf`;
@@ -668,12 +676,11 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
       await exportToPdf('cv-sheet-a4-canvas', fileName);
 
-      // Actualizar estado a 'downloaded' en la BD
-      if (cvId) {
+      if ((!cvId && !copySourceTitle) || (cvId && !hasUnsavedChanges)) {
         try {
-          await apiRequest(`/cv/${cvId}`, 'PUT', { status: 'downloaded', cv_data: buildCurrentCvDocument(), cv_style: currentCvTheme() });
+          await persistCurrentCv('downloaded');
         } catch {
-          setSuccessMsg('Se inició la descarga del PDF, pero no se pudo actualizar su estado. Puedes volver a guardar el borrador.');
+          setSuccessMsg('Se inició la descarga del PDF, pero no se pudo guardar en Mis borradores. Puedes guardarlo como borrador.');
         }
       }
     } catch (err) {
@@ -695,7 +702,6 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     setGeneratingLetter(true);
     setLetterProgressStep('Analizando perfil y vacante...');
     setErrorMsg('');
-    setLetterContent('');
     setCopied(false);
 
     const steps = [
@@ -721,9 +727,11 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         tone
       });
 
-      if (data.success) {
+      if (data.success && typeof data.letterContent === 'string' && data.letterContent.trim()) {
         setLetterContent(data.letterContent);
         setLetterId(data.letterId);
+        setJobOfferText(`Empresa: ${company || 'No especificada'}\nPuesto Objetivo: ${targetRole || 'No especificado'}\nDescripción de la Vacante: ${jobDescription}\nTono deseado: ${tone}`);
+        if (data.letterId) setSavedLetterSnapshot(JSON.stringify({ content: data.letterContent, company, targetRole, jobDescription, tone }));
 
         if (data.warning) {
           setErrorMsg(data.warning);
@@ -731,9 +739,15 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
 
         // Recargar historial si se guardó con éxito
         if (data.letterId) {
-          const refreshed = await loadUserSnapshot(profile.id);
-          setPastLetters(refreshed.letters || []);
+          try {
+            const refreshed = await loadUserSnapshot(profile.id);
+            setPastLetters(refreshed.letters || []);
+          } catch {
+            setSuccessMsg('La carta se guardó. No se pudo refrescar el listado; puedes abrirla desde Mis borradores.');
+          }
         }
+      } else {
+        throw new Error(data.error || 'La IA no devolvió una carta válida. Se conserva el texto anterior.');
       }
     } catch (err) {
       console.error('Error redactando carta:', err);
@@ -773,7 +787,8 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
       // Actualizar estado a 'downloaded' en la BD
       if (letterId) {
         try {
-          await apiRequest(`/letter/${letterId}`, 'PUT', { status: 'downloaded', letter_content: letterContent });
+          await apiRequest(`/letter/${letterId}`, 'PUT', { status: 'downloaded', letter_content: letterContent, company, target_role: targetRole, job_description: jobDescription, tone });
+          setSavedLetterSnapshot(JSON.stringify({ content: letterContent, company, targetRole, jobDescription, tone }));
         } catch {
           setSuccessMsg('Se inició la descarga del PDF, pero no se pudo actualizar su estado. Puedes volver a guardar el borrador.');
         }
@@ -790,31 +805,108 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   };
 
   const currentCvTheme = () => ({ template, primaryColor: color, fontFamily: font, fontSize, spacing, headerStyle, visibleSections, sectionOrder });
-  const buildCurrentCvDocument = () => updateCvDocumentData(finalCvData, {
+  const currentEditorData = () => ({
     first_name: cvFirstName, last_name: cvLastName, email: cvEmail, phone: cvPhone,
     location: cvLocation, linkedin: cvLinkedin, portfolio: cvPortfolio, career: cvCareer,
     target_role: cvTargetRole, target_job_description: cvTargetJobDescription, cv_focus: cvFocus,
     bio: cvBio, technical_skills: cvTechSkills, soft_skills: cvSoftSkills,
     certifications: cvCertifications, work_experience: cvExperience, academic_background: cvEducation
   });
+  const buildCurrentCvDocument = () => createCvDocumentData(finalCvData, currentEditorData());
+  const editCvContent = (patch) => {
+    setFinalCvData((document) => applyManualCvEdits(document, patch));
+    setHasUnpersistedCv(true);
+  };
+  const editCvContact = (field, value) => {
+    const setters = {
+      first_name: setCvFirstName, last_name: setCvLastName, email: setCvEmail,
+      phone: setCvPhone, location: setCvLocation, linkedin: setCvLinkedin, portfolio: setCvPortfolio,
+    };
+    setters[field](value);
+  };
+  const cvActionInProgress = generatingCv || downloadingCv || savingCvDraft;
+  const generatedTargetRole = finalCvData?.personal_info?.target_role ?? finalCvData?.target_role ?? finalCvData?.headline ?? '';
+  const needsCvRegeneration = Boolean(finalCvData) && (
+    cvTargetRole.trim() !== String(generatedTargetRole).trim()
+    || cvTargetJobDescription.trim() !== String(finalCvData.target_job_description ?? '').trim()
+  );
+
+  const letterSnapshot = JSON.stringify({ content: letterContent, company, targetRole, jobDescription, tone });
+  const hasUnsavedChanges = !loading && !loadError && (docType === 'letter'
+    ? Boolean(savedLetterSnapshot) && letterSnapshot !== savedLetterSnapshot
+    : hasChanges() || (!isProfileEditor && (hasUnpersistedCv || JSON.stringify(currentCvTheme()) !== JSON.stringify(savedTheme))));
+  const isCvEditor = docType === 'cv' && !isProfileEditor;
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    return protectUnsavedChanges(window, (path) => {
+      if (!isCvEditor) return window.confirm('Tienes cambios sin guardar. Si sales, se perderán. Pulsa Cancelar para continuar editando y guardarlos.');
+      if (confirmedCvExit.current === path) return true;
+      setPendingCvExit(path);
+      return false;
+    });
+  }, [hasUnsavedChanges, isCvEditor]);
 
   // PERSISTENCIA DE BORRADORES
-  const handleSaveCvDraft = async () => {
-    if (!cvId) return;
+  const persistCurrentCv = async (status, saveAsCopy = false) => {
+    const editor = currentEditorData();
+    const cvStyle = currentCvTheme();
+    const cvData = { ...buildCurrentCvDocument(), source_bio: editor.bio };
+    const targetId = saveAsCopy ? null : cvId;
+    const copyTitle = copySourceTitle || (saveAsCopy ? cvTitle || 'CV' : '');
+    const data = await apiRequest(targetId ? `/cv/${targetId}` : '/cv', targetId ? 'PUT' : 'POST', {
+      status, cv_data: cvData, cv_style: cvStyle,
+      ...(copyTitle && { document_title: `${copyTitle} · Copia` }),
+    });
+    if (!data.success || !data.cv?.id) throw new Error(data.error || 'No se pudo guardar el CV.');
+
+    setCvId(data.cv.id);
+    setCvTitle(data.cv.document_title || (copyTitle ? `${copyTitle} · Copia` : cvTitle));
+    setCopySourceTitle('');
+    setFinalCvData(cvData);
+    setLastSavedSnapshot(editor);
+    setSavedTheme(cvStyle);
+    setHasUnpersistedCv(false);
+  };
+
+  const handleSaveCvDraft = async (saveAsCopy = false) => {
+    if (!finalCvData || cvActionInProgress || needsCvRegeneration) return;
+    setSavingCvDraft(true);
     setErrorMsg('');
     setSuccessMsg('');
     try {
-      const savedData = buildCurrentCvDocument();
-      const data = await apiRequest(`/cv/${cvId}`, 'PUT', { status: 'draft', cv_data: savedData, cv_style: currentCvTheme() });
-      setFinalCvData(savedData);
-      if (data.success) {
-        setSuccessMsg('¡CV guardado como borrador en la base de datos!');
-      } else {
-        throw new Error(data.error || 'No se pudo actualizar el estado del CV.');
-      }
+      await persistCurrentCv('draft', saveAsCopy);
+      setSuccessMsg(saveAsCopy || copySourceTitle ? 'Copia guardada en Mis borradores.' : 'CV guardado en Mis borradores.');
     } catch (err) {
       console.error(err);
       setErrorMsg(mapError(err));
+    } finally {
+      setSavingCvDraft(false);
+    }
+  };
+
+  const canSaveCvBeforeExit = Boolean(finalCvData) && !needsCvRegeneration;
+  const finishCvExit = () => {
+    if (!pendingCvExit) return;
+    confirmedCvExit.current = pendingCvExit;
+    setPendingCvExit(null);
+    try {
+      navigateTo(pendingCvExit);
+    } finally {
+      confirmedCvExit.current = null;
+    }
+  };
+
+  const saveCvBeforeExit = async () => {
+    if (!canSaveCvBeforeExit || cvActionInProgress) return;
+    setSavingCvDraft(true);
+    try {
+      await persistCurrentCv('draft');
+      toast.success('CV guardado en Mis borradores.');
+      finishCvExit();
+    } catch (error) {
+      toast.error(mapError(error));
+    } finally {
+      setSavingCvDraft(false);
     }
   };
 
@@ -830,6 +922,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           job_description: jobDescription, tone
         });
         if (data.success) {
+          setSavedLetterSnapshot(letterSnapshot);
           setSuccessMsg('¡Carta de presentación guardada como borrador en la base de datos!');
         } else {
           throw new Error(data.error || 'No se pudo actualizar el estado de la carta.');
@@ -850,6 +943,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
         });
 
         if (data.success && data.letterId) {
+          setSavedLetterSnapshot(letterSnapshot);
           setLetterId(data.letterId);
           setSuccessMsg('¡Carta de presentación guardada como borrador en la base de datos!');
           
@@ -905,8 +999,9 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           
           toast.success('Carta de presentación eliminada correctamente.');
           setPastLetters(pastLetters.filter(l => l.id !== id));
-          setLetterContent('');
-          setJobOfferText('');
+          if (id === letterId) {
+            applyLetterDocument({ target_role: profile?.target_role, job_description: profile?.target_job_description });
+          }
         } catch (err) {
           console.error('Error al eliminar carta:', err);
           toast.error(mapError(err));
@@ -943,16 +1038,18 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
   }
 
   const liveCvData = {
-    headline: cvTargetRole,
+    headline: cvExperience.find((experience) => experience.role?.trim())?.role || cvCareer,
     professional_summary: cvBio,
-    work_experience: cvExperience.filter(w => !excludedExperienceIds.includes(w.id)),
+    work_experience: cvExperience.map((experience) => experience.description
+      ? { ...experience, bullets: [] }
+      : experience),
     academic_background: cvEducation,
     skills_categories: {
-      languages_and_frameworks: cvTechSkills.filter(s => !excludedSkills.includes(s)),
+      languages_and_frameworks: cvTechSkills,
       tools_and_databases: [],
-      methodologies_and_soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
+      methodologies_and_soft_skills: cvSoftSkills
     },
-    soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s)),
+    soft_skills: cvSoftSkills,
     certifications: cvCertifications
   };
   const liveProfile = {
@@ -983,30 +1080,62 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
     visibleSections,
     sectionOrder
   };
-  const livePreviewPanel = (
-    <div className="lg:col-span-7 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex justify-center overflow-x-auto shadow-inner min-h-[520px]">
-      <CVPreview
-        profile={liveProfile}
-        cvData={liveCvData}
-        theme={cvTheme}
-        sections={visibleSections}
-        sectionOrder={sectionOrder}
+  const jobDescriptionInput = (
+    <>
+      <label htmlFor="target-job-description" className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Descripción del puesto objetivo</label>
+      <textarea
+        id="target-job-description"
+        rows={10}
+        value={cvTargetJobDescription}
+        onChange={(e) => setCvTargetJobDescription(e.target.value)}
+        placeholder="Pega las funciones y los requisitos de la vacante."
+        className="w-full resize-y whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white supports-[field-sizing:content]:field-sizing-content supports-[field-sizing:content]:min-h-[calc(10lh+1.5rem+2px)] supports-[field-sizing:content]:resize-none"
       />
+    </>
+  );
+  const livePreviewPanel = (
+    <div className="lg:col-span-7 min-w-0 space-y-2">
+      {!finalCvData && <p className="text-xs text-slate-600 dark:text-slate-300">Vista previa de Mi perfil. Pulsa «Generar CV con IA» para redactar el resumen y adaptar tus competencias a la vacante.</p>}
+      <div className="bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 overflow-x-auto shadow-inner min-h-[520px]">
+        <div className="mx-auto w-[210mm]">
+          <CVPreview
+            profile={liveProfile}
+            cvData={finalCvData ? buildCurrentCvDocument() : liveCvData}
+            theme={cvTheme}
+            sections={visibleSections}
+            sectionOrder={sectionOrder}
+          />
+        </div>
+      </div>
     </div>
   );
 
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
+      <ConfirmDialog
+        open={Boolean(pendingCvExit)}
+        title="Tu CV tiene cambios sin guardar"
+        message={canSaveCvBeforeExit
+          ? 'Guarda esta versión como borrador para continuar después, o sal sin guardar.'
+          : 'Puedes seguir revisando el CV o salir sin guardar estos cambios.'}
+        confirmLabel={canSaveCvBeforeExit ? copySourceTitle ? 'Guardar copia y salir' : cvId ? 'Guardar cambios y salir' : 'Guardar borrador y salir' : 'Salir sin guardar'}
+        cancelLabel="Seguir aquí"
+        variant={canSaveCvBeforeExit ? 'info' : 'warning'}
+        loading={cvActionInProgress}
+        onCancel={() => setPendingCvExit(null)}
+        onConfirm={canSaveCvBeforeExit ? saveCvBeforeExit : finishCvExit}
+        alternateAction={canSaveCvBeforeExit ? { label: 'Salir sin guardar', onClick: finishCvExit } : undefined}
+      />
       
       {errorMsg && (
-        <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6">
+        <div role="alert" className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6">
           <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
           <span>{errorMsg}</span>
         </div>
       )}
 
       {successMsg && (
-        <div className="bg-emerald-50 border border-emerald-100 text-emerald-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6 animate-fade-in">
+        <div role="status" className="bg-emerald-50 border border-emerald-100 text-emerald-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6 animate-fade-in">
           <CheckCircle className="h-4.5 w-4.5 shrink-0 mt-0.5 text-emerald-650" />
           <span>{successMsg}</span>
         </div>
@@ -1031,7 +1160,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                   navigateTo('/documents/cv');
                 } else {
                   setDocType('cv');
-                  setCvStep(1);
+                  setCvStep(2);
                 }
               }}
               className="bg-white border border-slate-200 hover:border-indigo-500 hover:shadow-md rounded-2xl p-8 text-center space-y-4 transition-all duration-300 group cursor-pointer"
@@ -1075,18 +1204,24 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
           {/* Cabecera / Barra de Pasos */}
           <div className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-sm flex flex-col gap-4 xl:flex-row xl:justify-between xl:items-center">
             {/* Pasos del wizard como tabs segmentados (estándar de Mi Perfil / Mis Borradores) */}
-            <div className="flex gap-1 overflow-x-auto rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-1 w-full xl:w-auto">
+            {isProfileEditor ? (
+              <div>
+                <h2 className="font-bold text-slate-900 dark:text-white">Editar mi perfil</h2>
+                <p className="text-xs text-slate-500 mt-1">Revisa tus datos y guarda el perfil para utilizarlos en documentos y entrevistas.</p>
+              </div>
+            ) : <div className="flex gap-1 overflow-x-auto rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-1 w-full xl:w-auto">
               {[
-                { n: 1, label: '1. Datos Base' },
-                { n: 2, label: '2. Personalización' },
-                { n: 3, label: '3. Plantilla & Diseño' },
-                { n: 4, label: '4. Preview & Generación' }
-              ].map((step) => {
-                const isActive = step.n === 4 ? cvStep >= 4 : cvStep === step.n;
+                { n: 2, label: 'Personalización' },
+                { n: 3, label: 'Plantilla y diseño' },
+                { n: 4, label: 'Vista previa y generación' }
+              ].map((step, index) => {
+                const isActive = cvStep === step.n;
                 return (
                   <button
                     key={step.n}
                     type="button"
+                    aria-current={isActive ? 'step' : undefined}
+                    disabled={cvActionInProgress}
                     onClick={() => setCvStep(step.n)}
                     className={`px-3 py-2 rounded-lg text-[11px] font-bold whitespace-nowrap cursor-pointer transition-all ${
                       isActive
@@ -1094,19 +1229,31 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                         : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/70'
                     }`}
                   >
-                    {step.label}
+                    {index + 1}. {step.label}
                   </button>
                 );
               })}
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center xl:justify-end">
-              {cvStep < 5 && (
+            </div>}
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center xl:justify-end">
+              {isProfileEditor && <button type="button" onClick={() => navigateTo('/profile/view')} className="border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-xs font-bold cursor-pointer">Volver a mi perfil</button>}
+              {!isProfileEditor && (
                 <>
-                  {cvStep >= 2 && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateCvAi}
+                    disabled={cvActionInProgress}
+                    className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold cursor-pointer disabled:opacity-50 ${finalCvData
+                      ? 'border border-slate-200 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                  >
+                    <Sparkles aria-hidden="true" className="h-4 w-4" />
+                    {generatingCv ? 'Generando CV…' : finalCvData ? 'Regenerar con IA' : 'Generar CV con IA'}
+                  </button>
+                  {cvStep > 2 && (
                     <button
                       type="button"
                       onClick={prevStep}
-                      disabled={generatingCv}
+                      disabled={cvActionInProgress}
                       className="border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-650 dark:text-slate-300 font-bold px-4 py-2 rounded-xl text-xs flex items-center justify-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
                     >
                       <ChevronLeft className="h-3.5 w-3.5" />
@@ -1116,94 +1263,80 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                   {cvStep <= 3 && (
                     <button
                       type="button"
-                      onClick={cvStep === 1 ? () => handleSaveProfileData(true) : nextStep}
-                      disabled={savingProfileData}
+                      onClick={nextStep}
+                      disabled={cvActionInProgress}
                       className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm shadow-indigo-600/10 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {savingProfileData ? (
-                        <>
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          Guardando...
-                        </>
-                      ) : (
-                        <>
-                          Siguiente
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </>
-                      )}
+                      Siguiente
+                      <ChevronRight className="h-3.5 w-3.5" />
                     </button>
                   )}
                 </>
               )}
-              <button
-                type="button"
-                onClick={() => setShowImportModal(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-xl text-[10px] cursor-pointer shadow-sm text-center transition-all shrink-0 flex items-center justify-center gap-1.5"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                Importar CV con IA
-              </button>
+              {isProfileEditor && (
+                <button
+                  type="button"
+                  onClick={() => setShowImportModal(true)}
+                  className="flex items-center justify-center gap-1.5 rounded-xl border border-slate-200 px-4 py-2 text-[10px] font-bold hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  <Sparkles aria-hidden="true" className="h-3.5 w-3.5" />
+                  Importar CV con IA
+                </button>
+              )}
+              {isProfileEditor && (
+                <button
+                  type="button"
+                  disabled={savingProfileData}
+                  onClick={handleSaveProfileData}
+                  className="flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-indigo-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {savingProfileData && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
+                  {savingProfileData ? 'Guardando perfil…' : 'Guardar perfil'}
+                </button>
+              )}
             </div>
           </div>
 
-          <ImportCvModal
-            open={showImportModal}
-            onClose={() => setShowImportModal(false)}
-            onParsed={applyParsedCv}
-          />
+          {isProfileEditor && profileSaveError && (
+            <div ref={profileSaveErrorRef} role="alert" tabIndex={-1} className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-100">
+              <AlertCircle aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="space-y-1">
+                <p className="font-semibold">{profileSaveError.title}</p>
+                {profileSaveError.issues.length > 0 && (
+                  <ul className="list-disc space-y-1 pl-4">
+                    {profileSaveError.issues.map(({ text }) => <li key={text}>{text}</li>)}
+                  </ul>
+                )}
+                {profileSaveError.issues.length === 0 && <p>{profileSaveError.message}</p>}
+              </div>
+            </div>
+          )}
+
+          {isProfileEditor && (
+            <ImportCvModal
+              destination="profile"
+              open={showImportModal}
+              onClose={() => setShowImportModal(false)}
+              onParsed={applyParsedCv}
+            />
+          )}
 
           {/* CUERPO DEL WIZARD SEGÚN PASO */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm min-h-[350px] flex flex-col justify-between">
             
             <div>
               {/* PASO 1: DATOS BASE */}
-              {cvStep === 1 && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start text-left">
-                  <div className="lg:col-span-5 space-y-6">
-                  
-                  {/* Horizontal Tabs Menu */}
-                  <div className="border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4 pb-2">
-                    <div className="flex gap-4 overflow-x-auto text-xs font-bold text-slate-450 dark:text-slate-400">
-                      {[
-                        { id: 'personal', name: 'Información Personal', icon: User },
-                        { id: 'summary', name: 'Perfil Profesional', icon: FileText },
-                        { id: 'experience', name: 'Experiencia Laboral', icon: Briefcase },
-                        { id: 'education', name: 'Educación', icon: GraduationCap },
-                        { id: 'skills', name: 'Habilidades', icon: Wrench }
-                      ].map((tab) => {
-                        const Icon = tab.icon;
-                        return (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => handleEditorTabChange(tab.id)}
-                            className={`pb-2 border-b-2 flex items-center gap-1.5 cursor-pointer transition-all whitespace-nowrap ${
-                              activeEditorTab === tab.id
-                                ? 'border-indigo-650 text-indigo-650 dark:text-indigo-400 dark:border-indigo-400'
-                                : 'border-transparent hover:text-slate-750 dark:hover:text-slate-200'
-                            }`}
-                          >
-                            <Icon className="h-3.5 w-3.5" />
-                            {tab.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {saveStatusText && (
-                      <span className={`text-[9px] font-extrabold uppercase px-2 py-0.5 rounded transition-all animate-pulse shrink-0 ${
-                        saveStatusText.includes('Error') 
-                          ? 'text-red-600 bg-red-50 dark:bg-red-950/20 border border-red-100 dark:border-red-900/40' 
-                          : saveStatusText.includes('guardados') 
-                            ? 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40' 
-                            : 'text-indigo-600 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40'
-                      }`}>
-                        {saveStatusText}
-                      </span>
-                    )}
-                  </div>
+              {isProfileEditor && (
+                <div className="space-y-6 text-left">
+                  <div className="space-y-6">
 
+                  {/* Horizontal Tabs Menu */}
+                  <div className="border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 pb-2">
+                    <ProfileSectionTabs activeSection={activeEditorTab} onChange={setActiveEditorTab} invalidSections={invalidProfileTabs} />
+                    {hasUnsavedChanges && <span className="text-xs text-amber-600 shrink-0">Cambios sin guardar</span>}
+                  </div>
                   {/* Tab Contents */}
-                  <div className="mt-4">
+                  <div className="mt-4 [&_input[aria-invalid=true]]:border-rose-500!">
                     {/* Tab 1: Personal Info */}
                     {activeEditorTab === 'personal' && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1212,6 +1345,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                           <input 
                             type="text" 
                             value={cvFirstName} 
+                            {...requiredProfileInput(cvFirstName)}
                             onChange={(e) => setCvFirstName(e.target.value)}
                             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
                           />
@@ -1221,6 +1355,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                           <input 
                             type="text" 
                             value={cvLastName} 
+                            {...requiredProfileInput(cvLastName)}
                             onChange={(e) => setCvLastName(e.target.value)}
                             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
                           />
@@ -1230,6 +1365,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                           <input 
                             type="text" 
                             value={cvPhone} 
+                            {...requiredProfileInput(cvPhone)}
                             onChange={(e) => setCvPhone(e.target.value)}
                             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
                           />
@@ -1245,12 +1381,14 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                           />
                         </div>
                         <div>
-                          <label className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Correo electrónico</label>
-                          <input 
-                            type="email" 
-                            value={cvEmail} 
-                            disabled
-                            className="w-full bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-750 text-slate-500 dark:text-slate-400 rounded-xl px-4 py-2.5 text-xs outline-none cursor-not-allowed"
+                          <label htmlFor="cv-contact-email" className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Correo de contacto</label>
+                          <input
+                            id="cv-contact-email"
+                            type="email"
+                            value={cvEmail}
+                            {...requiredProfileInput(cvEmail)}
+                            onChange={(e) => setCvEmail(e.target.value)}
+                            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
                           />
                         </div>
                         <div>
@@ -1273,32 +1411,11 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                             className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
                           />
                         </div>
-                        <div className="sm:col-span-2">
-                          <label className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Puesto objetivo predeterminado</label>
-                          <input 
-                            type="text" 
-                            value={cvTargetRole} 
-                            onChange={(e) => setCvTargetRole(e.target.value)}
-                            placeholder="Ej: Senior React Developer"
-                            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800"
-                          />
-                        </div>
-                        <div className="sm:col-span-2">
-                          <label htmlFor="target-job-description" className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Descripción del puesto objetivo</label>
-                          <textarea
-                            id="target-job-description"
-                            rows={5}
-                            value={cvTargetJobDescription}
-                            onChange={(e) => setCvTargetJobDescription(e.target.value)}
-                            placeholder="Pega aquí las funciones, responsabilidades, requisitos y tecnologías solicitadas en la oferta laboral."
-                            className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl p-3 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-800 leading-relaxed whitespace-pre-wrap resize-y"
-                          />
-                        </div>
                       </div>
                     )}
 
                     {/* Tab 2: Profile Summary (Bio) */}
-                    {activeEditorTab === 'summary' && (
+                    {activeEditorTab === 'personal' && (
                       <div className="space-y-2">
                         <label className="block text-slate-505 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1">Perfil Profesional / Biografía</label>
                         <textarea
@@ -1312,9 +1429,9 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                     )}
 
                     {/* Tab 3: Work Experience */}
-                    {activeEditorTab === 'experience' && (
+                    {activeEditorTab === 'trajectory' && (
                       <div className="space-y-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
+                        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-2 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Historial de Experiencias Laborales</h4>
                           <button
                             type="button"
@@ -1342,6 +1459,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={exp.company} 
+                                    {...requiredProfileInput(exp.company)}
                                     onChange={(e) => handleExperienceItemChange(index, 'company', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
                                   />
@@ -1351,6 +1469,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={exp.role} 
+                                    {...requiredProfileInput(exp.role)}
                                     onChange={(e) => handleExperienceItemChange(index, 'role', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
                                   />
@@ -1360,6 +1479,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={exp.start_date} 
+                                    {...requiredProfileInput(exp.start_date)}
                                     onChange={(e) => handleExperienceItemChange(index, 'start_date', e.target.value)}
                                     placeholder="AAAA-MM-DD o Mes AAAA"
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
@@ -1396,9 +1516,9 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                     )}
 
                     {/* Tab 4: Education */}
-                    {activeEditorTab === 'education' && (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
+                    {activeEditorTab === 'trajectory' && (
+                      <div className="mt-6 space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-2 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Historial Académico / Estudios</h4>
                           <button
                             type="button"
@@ -1426,6 +1546,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={edu.institution} 
+                                    {...requiredProfileInput(edu.institution)}
                                     onChange={(e) => handleEducationItemChange(index, 'institution', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
                                   />
@@ -1435,6 +1556,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={edu.degree} 
+                                    {...requiredProfileInput(edu.degree)}
                                     onChange={(e) => handleEducationItemChange(index, 'degree', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
                                   />
@@ -1444,6 +1566,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                                   <input 
                                     type="text" 
                                     value={edu.start_date} 
+                                    {...requiredProfileInput(edu.start_date)}
                                     onChange={(e) => handleEducationItemChange(index, 'start_date', e.target.value)}
                                     placeholder="AAAA-MM-DD o Año"
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
@@ -1560,20 +1683,7 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                     )}
                   </div>
 
-                  {/* Secondary Save Actions inside Paso 1 */}
-                  <div className="flex justify-end pt-4 border-t border-slate-100 dark:border-slate-800">
-                    <button
-                      type="button"
-                      disabled={savingProfileData}
-                      onClick={() => handleSaveProfileData(false)}
-                      className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      {savingProfileData && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                      Guardar cambios de perfil
-                    </button>
                   </div>
-                  </div>
-                  {livePreviewPanel}
                 </div>
               )}
 
@@ -1583,158 +1693,33 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                   <div className="lg:col-span-5 space-y-6">
                   
                   <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
-                    <h3 className="text-xs font-black uppercase text-slate-900 dark:text-white tracking-wider">Ajustes de personalización para el CV</h3>
-                    <p className="text-[10px] text-slate-400 mt-1">Configura parámetros específicos que cambiarán el contenido del currículum generado por Inteligencia Artificial.</p>
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white">Vacante objetivo</h3>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">Usaremos los datos de Mi perfil para adaptar tu CV a esta vacante.</p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div>
-                      <label className="block text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1.5">Puesto Objetivo para este CV</label>
+                  <div>
+                      <label htmlFor="cv-target-role" className="block text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1.5">Puesto objetivo para este CV</label>
                       <input 
+                        id="cv-target-role"
                         type="text" 
                         value={cvTargetRole} 
                         onChange={(e) => setCvTargetRole(e.target.value)}
                         placeholder="Ej: React Developer Junior"
                         className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white"
                       />
-                      <label className="flex items-center gap-2 mt-2 cursor-pointer text-[10px] font-semibold text-slate-500">
-                        <input 
-                          type="checkbox" 
-                          checked={updateProfileTargetRole}
-                          onChange={(e) => setUpdateProfileTargetRole(e.target.checked)}
-                          className="rounded border-slate-300 dark:border-slate-700 focus:ring-indigo-500"
-                        />
-                        Guardar cargo objetivo modificado en mi Perfil principal
-                      </label>
                     </div>
 
-                    <div>
-                      <label className="block text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider mb-1.5">Enfoque del Currículum</label>
-                      <select
-                        value={cvFocus}
-                        onChange={(e) => setCvFocus(e.target.value)}
-                        className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white"
-                      >
-                        <option value="ATS">ATS (Optimización de keywords y coherencia general) [Recomendado]</option>
-                        <option value="técnico">Técnico (Foco en lenguajes, frameworks e infraestructuras)</option>
-                        <option value="ejecutivo">Ejecutivo (Foco en metas, liderazgo, gestión y métricas de negocio)</option>
-                        <option value="junior">Junior (Foco en proyectos académicos, potencial y capacidad de aprendizaje)</option>
-                        <option value="senior">Senior (Foco en impacto cuantificable, mentoría y diseño de soluciones)</option>
-                      </select>
-                    </div>
+                  <div className="space-y-2">
+                    {jobDescriptionInput}
+                    {cvTargetRole.trim() && (defaultTargetMatches ? (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Puesto predeterminado para cartas y entrevistas.</p>
+                    ) : (
+                      <button type="button" onClick={handleSaveDefaultTarget} disabled={savingDefaultTarget} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-slate-700 dark:text-indigo-300 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50">
+                        {savingDefaultTarget ? 'Guardando…' : 'Usar también en cartas y entrevistas'}
+                      </button>
+                    ))}
                   </div>
 
-                  {/* Selección de Experiencia */}
-                  <div className="space-y-2.5 pt-2">
-                    <label className="block text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider">Experiencias Laborales a Incluir</label>
-                    
-                    <div className="grid grid-cols-1 gap-2.5 max-h-[220px] overflow-y-auto pr-1">
-                      {cvExperience.map((exp) => {
-                        const isIncluded = !excludedExperienceIds.includes(exp.id);
-                        
-                        return (
-                          <div 
-                            key={exp.id} 
-                            onClick={() => {
-                              if (isIncluded) {
-                                setExcludedExperienceIds([...excludedExperienceIds, exp.id]);
-                              } else {
-                                setExcludedExperienceIds(excludedExperienceIds.filter(id => id !== exp.id));
-                              }
-                            }}
-                            className={`border rounded-xl p-3 flex items-start gap-3 cursor-pointer transition-all ${
-                              isIncluded 
-                                ? 'border-indigo-500/60 bg-indigo-50/10 dark:bg-indigo-950/10' 
-                                : 'border-slate-200 dark:border-slate-800 opacity-60 hover:opacity-80'
-                            }`}
-                          >
-                            <input 
-                              type="checkbox" 
-                              checked={isIncluded} 
-                              readOnly 
-                              className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                            />
-                            <div className="text-xs">
-                              <p className="font-bold text-slate-800 dark:text-slate-200">{exp.role} <span className="font-normal text-slate-450">en {exp.company}</span></p>
-                              <p className="text-[10px] text-slate-400 mt-0.5">{exp.start_date} - {exp.end_date || 'Actual'}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {cvExperience.length === 0 && (
-                        <p className="text-xs text-slate-400 italic">No tienes experiencias registradas en tu Perfil principal.</p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Selección de Habilidades */}
-                  <div className="space-y-3 pt-2">
-                    <label className="block text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider">Habilidades a Incluir</label>
-                    <p className="text-[9px] text-slate-450">Haz clic en una habilidad para excluirla/desactivarla temporalmente de la generación de este CV.</p>
-
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Técnicas</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {cvTechSkills.map((skill) => {
-                          const isExcluded = excludedSkills.includes(skill);
-                          
-                          return (
-                            <button
-                              key={skill}
-                              type="button"
-                              onClick={() => {
-                                if (isExcluded) {
-                                  setExcludedSkills(excludedSkills.filter(s => s !== skill));
-                                } else {
-                                  setExcludedSkills([...excludedSkills, skill]);
-                                }
-                              }}
-                              className={`text-[10px] font-semibold px-2.5 py-1 rounded-xl transition-all cursor-pointer border ${
-                                !isExcluded 
-                                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-650 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/60' 
-                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-750 line-through'
-                              }`}
-                            >
-                              {skill}
-                            </button>
-                          );
-                        })}
-                        {cvTechSkills.length === 0 && <p className="text-xs text-slate-400 italic">Sin habilidades registradas.</p>}
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Blandas</p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {cvSoftSkills.map((skill) => {
-                          const isExcluded = excludedSkills.includes(skill);
-                          
-                          return (
-                            <button
-                              key={skill}
-                              type="button"
-                              onClick={() => {
-                                if (isExcluded) {
-                                  setExcludedSkills(excludedSkills.filter(s => s !== skill));
-                                } else {
-                                  setExcludedSkills([...excludedSkills, skill]);
-                                }
-                              }}
-                              className={`text-[10px] font-semibold px-2.5 py-1 rounded-xl transition-all cursor-pointer border ${
-                                !isExcluded 
-                                  ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-650 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/60' 
-                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-750 line-through'
-                              }`}
-                            >
-                              {skill}
-                            </button>
-                          );
-                        })}
-                        {cvSoftSkills.length === 0 && <p className="text-xs text-slate-400 italic">Sin habilidades registradas.</p>}
-                      </div>
-                    </div>
-                  </div>
                   </div>
                   {livePreviewPanel}
                 </div>
@@ -1905,190 +1890,65 @@ export default function Documents({ initialDocType = 'select', navigateTo }) {
                 ) : (
                   <div className="space-y-6 text-left">
                     
-                    <div className="pb-3 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                    <div className="pb-3 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-3">
                       <div>
-                        <h3 className="text-xs font-black uppercase text-slate-900 dark:text-white tracking-wider">Generación y Vista Previa</h3>
-                        <p className="text-[10px] text-slate-400 mt-1">Revisa el borrador visual de tu currículum. Si estás listo, haz clic en "Generar CV con IA" para optimizar el contenido.</p>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-white">{finalCvData ? 'Tu CV listo para revisar' : 'Vista previa con los datos de tu perfil'}</h3>
+                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                          {needsCvRegeneration
+                            ? 'La vacante cambió. Regenera el CV para actualizarlo antes de guardarlo o descargarlo.'
+                            : copySourceTitle ? `Estás editando una copia de «${copySourceTitle}».`
+                              : finalCvData ? 'Revisa y ajusta el contenido antes de guardar o descargar.' : 'Genera tu CV con IA para revisar el resultado antes de descargarlo o guardarlo.'}
+                        </p>
                       </div>
-                      {finalCvData && (
-                        <button
-                          onClick={handleGenerateCvAi}
-                          disabled={generatingCv}
-                          className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-indigo-600/10 disabled:opacity-50"
-                        >
-                          {generatingCv ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                          Regenerar con IA
-                        </button>
-                      )}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {finalCvData && (
+                          <>
+                            <button type="button" aria-expanded={showCvContentEditor} aria-controls={showCvContentEditor ? 'cv-content-editor' : undefined} onClick={() => setShowCvContentEditor((open) => !open)} disabled={cvActionInProgress} className="flex items-center gap-2 rounded-xl border border-indigo-200 px-4 py-2.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-950 cursor-pointer disabled:opacity-50">
+                              <Pencil aria-hidden="true" className="h-4 w-4" />
+                              {showCvContentEditor ? 'Cerrar editor' : 'Editar contenido'}
+                            </button>
+                            <button type="button" onClick={() => handleSaveCvDraft()} disabled={cvActionInProgress || needsCvRegeneration} className="rounded-xl border border-indigo-200 px-4 py-2.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-950 cursor-pointer disabled:opacity-50">
+                              {savingCvDraft ? 'Guardando…' : copySourceTitle ? 'Guardar copia' : cvId ? 'Guardar cambios' : 'Guardar como borrador'}
+                            </button>
+                            {cvId && (
+                              <button type="button" onClick={() => handleSaveCvDraft(true)} disabled={cvActionInProgress || needsCvRegeneration} className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50">
+                                Guardar como copia
+                              </button>
+                            )}
+                            <button type="button" onClick={handleDownloadPdf} disabled={cvActionInProgress || needsCvRegeneration} className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
+                              <Download aria-hidden="true" className="h-4 w-4" />
+                              {downloadingCv ? 'Preparando PDF…' : 'Descargar PDF'}
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-                      
-                      {/* Columna Izquierda: Acciones rápidas de IA */}
-                      <div className="lg:col-span-4 bg-slate-50 dark:bg-slate-800/20 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
-                        
-                        <div className="space-y-3.5">
-                          <div className="text-xs font-extrabold uppercase text-slate-700 dark:text-slate-350 flex items-center gap-1">
-                            <Settings className="h-4 w-4" /> Resumen de Opciones
-                          </div>
-                          <ul className="text-[11px] text-slate-650 dark:text-slate-400 space-y-1.5 list-disc pl-4 font-medium">
-                            <li>Puesto: <span className="text-indigo-650 dark:text-indigo-400 font-bold">{cvTargetRole || '—'}</span></li>
-                            <li>Enfoque: <span className="capitalize font-bold">{cvFocus}</span></li>
-                            <li>Experiencias: <span className="font-bold">{cvExperience.length - excludedExperienceIds.length} de {cvExperience.length}</span></li>
-                            <li>Habilidades: <span className="font-bold">{cvTechSkills.length + cvSoftSkills.length - excludedSkills.length} de {cvTechSkills.length + cvSoftSkills.length}</span></li>
-                            <li>Diseño: <span className="font-bold capitalize">{template} | {color} | {font}</span></li>
-                            <li>ATS: <span className="font-bold">keywords, secciones estándar y estructura legible</span></li>
-                          </ul>
+                    <div className={showCvContentEditor && finalCvData ? 'grid items-start gap-4 2xl:grid-cols-[minmax(16rem,0.65fr)_minmax(0,2fr)]' : undefined}>
+                      {showCvContentEditor && finalCvData && (
+                        <fieldset disabled={cvActionInProgress} className="min-w-0">
+                          <CvContentEditor document={buildCurrentCvDocument()} visibleSections={visibleSections} onChange={editCvContent}
+                            onContactChange={editCvContact} onVisibilityChange={(key, visible) => setVisibleSections((current) => ({ ...current, [key]: visible }))} />
+                        </fieldset>
+                      )}
+                      <div className="min-w-0 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 overflow-x-auto shadow-inner min-h-[480px]">
+                        <div className="mx-auto w-[210mm]">
+                          <CVPreview
+                            profile={liveProfile}
+                            cvData={finalCvData ? buildCurrentCvDocument() : liveCvData}
+                            theme={cvTheme}
+                            sections={visibleSections}
+                            sectionOrder={sectionOrder}
+                          />
                         </div>
-
-                        <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
-                          {finalCvData ? (
-                            <div className="bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40 rounded-xl p-3 text-xs text-emerald-850 dark:text-emerald-400 flex items-center gap-2 mb-3">
-                              <CheckCircle className="h-4.5 w-4.5 text-emerald-600" />
-                              <span className="font-bold">¡Tu CV optimizado ya está listo!</span>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={handleGenerateCvAi}
-                              disabled={generatingCv}
-                              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-xl text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-indigo-600/10 disabled:opacity-50"
-                            >
-                              {generatingCv ? <Loader2 className="h-4.5 w-4.5 animate-spin" /> : <Sparkles className="h-4.5 w-4.5" />}
-                              Generar CV con IA
-                            </button>
-                          )}
-                        </div>
-
                       </div>
-
-                      {/* Columna Derecha: Vista previa en tiempo real */}
-                      <div className="lg:col-span-8 bg-slate-100 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex justify-center overflow-x-auto shadow-inner min-h-[480px]">
-                        <CVPreview
-                          profile={liveProfile}
-                          cvData={finalCvData ? buildCurrentCvDocument() : {
-                            headline: cvTargetRole,
-                            professional_summary: cvBio,
-                            work_experience: cvExperience.filter(w => !excludedExperienceIds.includes(w.id)),
-                            academic_background: cvEducation,
-                            skills_categories: {
-                              languages_and_frameworks: cvTechSkills.filter(s => !excludedSkills.includes(s)),
-                              tools_and_databases: [],
-                              methodologies_and_soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
-                            },
-                            soft_skills: cvSoftSkills.filter(s => !excludedSkills.includes(s))
-                          }}
-                          theme={{
-                            template,
-                            fontFamily: font,
-                            primaryColor: color,
-                            fontSize,
-                            spacing,
-                            headerStyle,
-                            visibleSections,
-                            sectionOrder
-                          }}
-                          sections={visibleSections}
-                          sectionOrder={sectionOrder}
-                        />
-                      </div>
-
                     </div>
 
                   </div>
                 )
               )}
 
-              {/* PASO 5: ÉXITO */}
-              {cvStep === 5 && (
-                <>
-                  <div className="flex flex-col items-center justify-center py-10 space-y-6 text-center animate-fade-in text-slate-800 dark:text-slate-200">
-                    <div className="bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-450 border border-emerald-100 dark:border-emerald-900/40 h-20 w-20 rounded-full flex items-center justify-center shadow-md animate-bounce">
-                      <CheckCircle className="h-10 w-10" />
-                    </div>
-                    <div className="space-y-2">
-                      <h3 className="text-xl font-black text-slate-900 dark:text-white">¡Tu CV ha sido generado exitosamente!</h3>
-                      <p className="text-slate-400 text-xs max-w-sm">
-                        La Inteligencia Artificial ha reestructurado tu currículum inyectando verbos de impacto bajo el enfoque seleccionado. Ya puedes descargarlo en PDF.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Canvas invisible pero presente para permitir la exportación a PDF */}
-                  <div className="absolute left-[-9999px] top-[-9999px]">
-                    <CVPreview
-                      profile={liveProfile}
-                      cvData={buildCurrentCvDocument()}
-                      theme={{
-                        template,
-                        fontFamily: font,
-                        primaryColor: color,
-                        fontSize,
-                        spacing,
-                        headerStyle,
-                        visibleSections,
-                        sectionOrder
-                      }}
-                      sections={visibleSections}
-                      sectionOrder={sectionOrder}
-                    />
-                  </div>
-                </>
-              )}
             </div>
-
-            {cvStep === 4 && finalCvData && !generatingCv && (
-              <div className="flex flex-wrap justify-end gap-3 pt-5 border-t border-slate-200 mt-5">
-                <button type="button" onClick={handleSaveCvDraft} className="border border-indigo-200 text-indigo-700 font-bold px-5 py-3 rounded-xl text-xs cursor-pointer">
-                  Guardar cambios del borrador
-                </button>
-                <button type="button" onClick={handleDownloadPdf} disabled={downloadingCv} className="bg-indigo-600 text-white font-bold px-5 py-3 rounded-xl text-xs cursor-pointer disabled:opacity-50">
-                  {downloadingCv ? 'Generando PDF...' : 'Descargar este CV (PDF)'}
-                </button>
-              </div>
-            )}
-            {cvStep === 5 && (
-            <div className="flex justify-center items-center pt-6 border-t border-slate-100 dark:border-slate-800 mt-8">
-                <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
-                  <button
-                    onClick={handleDownloadPdf}
-                    disabled={downloadingCv}
-                    className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-6 py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md shadow-indigo-650/20 cursor-pointer disabled:opacity-50"
-                  >
-                    {downloadingCv ? (
-                      <>
-                        <Loader2 className="h-4.5 w-4.5 animate-spin" />
-                        Generando PDF...
-                      </>
-                    ) : (
-                      <>
-                        <Download className="h-4.5 w-4.5" />
-                        Descargar CV (PDF)
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={handleSaveCvDraft}
-                    className="bg-indigo-55/50 hover:bg-indigo-100 text-indigo-600 font-bold px-6 py-3 rounded-xl text-xs transition-all cursor-pointer"
-                  >
-                    Guardar como borrador
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (typeof navigateTo === 'function') {
-                        navigateTo('/dashboard');
-                      } else {
-                        setDocType('select');
-                        setCvStep(1);
-                      }
-                    }}
-                    className="border border-slate-200 hover:bg-slate-50 text-slate-650 font-bold px-6 py-3 rounded-xl text-xs transition-colors cursor-pointer"
-                  >
-                    Volver
-                  </button>
-                </div>
-            </div>
-            )}
-
           </div>
         </div>
       ) : (

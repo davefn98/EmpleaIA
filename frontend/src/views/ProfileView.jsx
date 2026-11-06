@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import ProgressIndicator from '../components/common/ProgressIndicator';
 import EmptyState from '../components/common/EmptyState';
+import ProfileSectionTabs from '../components/common/ProfileSectionTabs';
 
 export default function ProfileView({ navigateTo }) {
   const [profile, setProfile] = useState(null);
@@ -22,7 +23,7 @@ export default function ProfileView({ navigateTo }) {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [profileMissing, setProfileMissing] = useState(false);
-  const [activeTab, setActiveTab] = useState('resumen');
+  const [activeTab, setActiveTab] = useState('personal');
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -71,7 +72,7 @@ export default function ProfileView({ navigateTo }) {
   }, [reloadKey]);
 
   const handleEditRedirect = () => {
-    navigateTo('/documents/cv');
+    navigateTo('/profile/edit');
   };
 
   if (loading) {
@@ -110,7 +111,7 @@ export default function ProfileView({ navigateTo }) {
           title="Aún no has creado tu perfil"
           description="Completa tu información profesional para empezar a generar CV, cartas y entrevistas personalizadas."
           actionText="Completar Perfil"
-          onAction={() => navigateTo('/documents/cv')}
+          onAction={() => navigateTo('/profile/edit')}
         />
       </div>
     );
@@ -138,43 +139,24 @@ export default function ProfileView({ navigateTo }) {
     { label: 'Habilidades', completed: isSkillsComplete },
   ];
 
+  const personalFields = [
+    { label: 'Nombres y apellidos', value: [profile?.first_name, profile?.last_name].filter(Boolean).join(' ') },
+    { label: 'Correo de contacto', value: profile?.contact_email ?? profile?.email },
+    { label: 'Teléfono', value: profile?.phone },
+    { label: 'Ubicación', value: profile?.location },
+    { label: 'Carrera o profesión', value: profile?.career },
+    { label: 'LinkedIn', value: profile?.linkedin || profile?.linkedin_url },
+  ];
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <div className="mx-auto w-full max-w-[1600px]">
 
-      {/* Franja de navegación del perfil: tabs segmentados + acción principal */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-3 shadow-sm mb-6 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex gap-1 overflow-x-auto rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800/60 p-1 w-full lg:w-auto">
-          {[
-            { id: 'resumen', name: 'Resumen', icon: FileText },
-            { id: 'personal', name: 'Información personal', icon: User },
-            { id: 'experiencia', name: 'Experiencia laboral', icon: Briefcase },
-            { id: 'educacion', name: 'Educación', icon: GraduationCap },
-            { id: 'habilidades', name: 'Habilidades', icon: Wrench }
-          ].map((tab) => {
-            const TabIcon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold cursor-pointer transition-all whitespace-nowrap ${
-                  isActive
-                    ? '!bg-indigo-600 !text-white shadow-sm border border-transparent'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-white/70 dark:hover:bg-slate-800/70 border border-transparent'
-                }`}
-              >
-                <TabIcon className={`h-3.5 w-3.5 shrink-0 ${isActive ? '!text-white' : 'text-slate-400 dark:text-slate-500'}`} />
-                {tab.name}
-              </button>
-            );
-          })}
-        </div>
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/60 rounded-2xl p-4 shadow-sm mb-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+        <ProfileSectionTabs activeSection={activeTab} onChange={setActiveTab} />
 
         <button
           onClick={handleEditRedirect}
           className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-5 rounded-xl cursor-pointer shadow-sm shadow-indigo-600/10 text-xs flex items-center justify-center gap-1.5 transition-all shrink-0"
-          title="Editar tu perfil desde el generador de CV"
         >
           <Edit3 className="h-3.5 w-3.5" /> Editar perfil
         </button>
@@ -187,7 +169,7 @@ export default function ProfileView({ navigateTo }) {
         <div className="lg:col-span-8 space-y-6">
           
           {/* Active Tab rendering */}
-          {activeTab === 'resumen' && (
+          {activeTab === 'personal' && (
             <div className="space-y-6">
               {/* Personal Info Card */}
               <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
@@ -198,28 +180,14 @@ export default function ProfileView({ navigateTo }) {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <span className="text-slate-450 text-[10px] font-bold uppercase block mb-0.5">Nombres y Apellidos</span>
-                    <span className="font-semibold text-slate-800">{profile?.first_name} {profile?.last_name || 'No especificado'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-450 text-[10px] font-bold uppercase block mb-0.5">Correo electrónico</span>
-                    <span className="font-semibold text-slate-800">{profile?.email || 'No especificado'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-450 text-[10px] font-bold uppercase block mb-0.5">Teléfono</span>
-                    <span className="font-semibold text-slate-800">{profile?.phone || 'No especificado'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-450 text-[10px] font-bold uppercase block mb-0.5">Ubicación</span>
-                    <span className="font-semibold text-slate-800">{profile?.location || 'No especificado'}</span>
-                  </div>
-                  <div className="sm:col-span-2">
-                    <span className="text-slate-450 text-[10px] font-bold uppercase block mb-0.5">Cargo objetivo</span>
-                    <span className="font-semibold text-slate-800">{profile?.target_role || 'No especificado'}</span>
-                  </div>
-                </div>
+                <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
+                  {personalFields.map(({ label, value }) => (
+                    <div key={label} className="min-w-0">
+                      <dt className="text-xs text-slate-600 dark:text-slate-400">{label}</dt>
+                      <dd className="mt-1 text-sm font-medium text-slate-800 wrap-break-word dark:text-slate-200">{value || 'Sin registrar'}</dd>
+                    </div>
+                  ))}
+                </dl>
               </div>
 
               {/* Profile Bio / Summary Card */}
@@ -230,68 +198,15 @@ export default function ProfileView({ navigateTo }) {
                     <h3 className="text-sm font-bold text-slate-900">Perfil profesional</h3>
                   </div>
                 </div>
-                <p className="text-xs text-slate-600 leading-relaxed text-justify whitespace-pre-wrap">
+                <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap wrap-break-word dark:text-slate-300">
                   {profile?.bio || 'Sin descripción profesional registrada. Edita tu perfil para completarlo.'}
                 </p>
               </div>
 
-              {/* Skills Card */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
-                <div className="flex justify-between items-center pb-2 border-b border-slate-100">
-                  <div className="flex items-center gap-2">
-                    <Wrench className="h-4.5 w-4.5 text-indigo-600" />
-                    <h3 className="text-sm font-bold text-slate-900">Habilidades principales</h3>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {profile?.technical_skills?.map((s) => (
-                    <span key={s} className="bg-indigo-50 border border-indigo-100 text-indigo-600 px-3 py-1 rounded-xl text-xs font-bold">
-                      {s}
-                    </span>
-                  ))}
-                  {profile?.soft_skills?.map((s) => (
-                    <span key={s} className="bg-slate-100 border border-slate-200/60 text-slate-600 px-3 py-1 rounded-xl text-xs font-bold">
-                      {s}
-                    </span>
-                  ))}
-                  {!profile?.technical_skills?.length && !profile?.soft_skills?.length && (
-                    <p className="text-xs text-slate-400 italic">No hay habilidades registradas.</p>
-                  )}
-                </div>
-              </div>
             </div>
           )}
 
-          {activeTab === 'personal' && (
-            <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
-              <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100">Información Personal</h3>
-              <div className="space-y-3.5 text-xs">
-                <div className="flex border-b border-slate-50 py-2">
-                  <span className="w-1/3 text-slate-450 font-bold uppercase tracking-wider">Nombre Completo</span>
-                  <span className="flex-1 font-semibold text-slate-800">{profile?.first_name} {profile?.last_name || '-'}</span>
-                </div>
-                <div className="flex border-b border-slate-50 py-2">
-                  <span className="w-1/3 text-slate-450 font-bold uppercase tracking-wider">Correo Electrónico</span>
-                  <span className="flex-1 font-semibold text-slate-850">{profile?.email || '-'}</span>
-                </div>
-                <div className="flex border-b border-slate-50 py-2">
-                  <span className="w-1/3 text-slate-450 font-bold uppercase tracking-wider">Teléfono / Celular</span>
-                  <span className="flex-1 font-semibold text-slate-800">{profile?.phone || '-'}</span>
-                </div>
-                <div className="flex border-b border-slate-50 py-2">
-                  <span className="w-1/3 text-slate-450 font-bold uppercase tracking-wider">Ubicación</span>
-                  <span className="flex-1 font-semibold text-slate-800">{profile?.location || '-'}</span>
-                </div>
-                <div className="flex py-2">
-                  <span className="w-1/3 text-slate-450 font-bold uppercase tracking-wider">Cargo Objetivo</span>
-                  <span className="flex-1 font-semibold text-slate-800">{profile?.target_role || '-'}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === 'experiencia' && (
+          {activeTab === 'trajectory' && (
             <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
               <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
                 <Briefcase className="h-4.5 w-4.5 text-indigo-650" />
@@ -306,23 +221,23 @@ export default function ProfileView({ navigateTo }) {
                       <span className="text-[10px] text-slate-450 font-semibold">{exp.start_date} - {exp.end_date || 'Actual'}</span>
                     </div>
                     <div className="text-[10.5px] font-bold text-indigo-600">{exp.company}</div>
-                    <p className="text-slate-600 leading-relaxed text-justify mt-1.5">{exp.description}</p>
+                    <p className="text-slate-600 leading-relaxed whitespace-pre-wrap mt-1.5">{exp.description}</p>
                   </div>
                 ))}
                 {work.length === 0 && (
                   <EmptyState
                     icon={Briefcase}
                     title="Aún no hay experiencia registrada"
-                    description="Registra tus puestos anteriores o proyectos freelance en el generador de CV."
-                    actionText="Completar Perfil"
-                    onAction={() => navigateTo('/documents/cv')}
+                    description="Agrega tus puestos anteriores o proyectos independientes."
+                    actionText="Editar perfil"
+                    onAction={handleEditRedirect}
                   />
                 )}
               </div>
             </div>
           )}
 
-          {activeTab === 'educacion' && (
+          {activeTab === 'trajectory' && (
             <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 text-left">
               <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
                 <GraduationCap className="h-4.5 w-4.5 text-indigo-650" />
@@ -344,15 +259,15 @@ export default function ProfileView({ navigateTo }) {
                     icon={GraduationCap}
                     title="Aún no hay educación registrada"
                     description="Registra tu formación escolar, técnica, universitaria o cursos."
-                    actionText="Completar Perfil"
-                    onAction={() => navigateTo('/documents/cv')}
+                    actionText="Editar perfil"
+                    onAction={handleEditRedirect}
                   />
                 )}
               </div>
             </div>
           )}
 
-          {activeTab === 'habilidades' && (
+          {activeTab === 'skills' && (
             <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6 text-left">
               <h3 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">
                 <Wrench className="h-4.5 w-4.5 text-indigo-650" />

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "atencion-cambio-de-area",
+    "target": "Sin Experiencia / Atención al Cliente / Turno Tarde / Full o Part Time / Planilla / GANA +1500",
+    "vacancy": "Atender consultas, registrar incidentes y dar seguimiento a solicitudes hasta su cierre. No se requiere experiencia directa.",
+    "profile": { "career": "Desarrollo de software" },
+    "work": [{ "role": "Backend Developer", "description": "Resolví incidentes y seguí servicios productivos.\nDocumenté cambios en GitHub." }],
+    "evidence": ["res(?:ol|uel)[^.]{0,45}inciden|inciden[^.]{0,35}res(?:ol|uel)", "segui[^.]{0,45}servicios?|servicios?[^.]{0,35}segui"],
+    "alignment": "atencion al cliente|atender consultas|atencion de consultas|seguimiento de solicitudes|registro de solicitudes",
+    "forbidden": ["atendi (a )?clientes", "experiencia (directa )?en atencion al cliente", "call center", "1500"],
+    "reference": "He resuelto incidentes y dado seguimiento a servicios en producción. Busco aplicar esas habilidades a la atención de consultas y al seguimiento de solicitudes.",
+    "simulated": "Mi trayectoria incluye seguimiento operativo."
+  },
+  {
+    "id": "logistica-experiencia-afin",
+    "target": "Asistente de logística",
+    "vacancy": "Apoyar el control de inventario, verificar guías de despacho y dar seguimiento a las entregas.",
+    "profile": { "career": "Logística" },
+    "work": [{ "role": "Auxiliar de almacén", "description": "Registré entradas y salidas de materiales en Excel.\nVerifiqué guías de despacho antes de cada salida." }],
+    "evidence": ["movimientos? de materiales|entradas y salidas", "guias de despacho"],
+    "alignment": "inventario|entregas|logistica",
+    "forbidden": ["\\bsap\\b", "coordine transportistas", "dirigi (el )?almacen"],
+    "reference": "Registré entradas y salidas de materiales en Excel y verifiqué guías de despacho. Esa experiencia me permite apoyar el control de inventario y el seguimiento de entregas.",
+    "simulated": "Lideré el almacén con SAP y reduje los costos en 40%."
+  },
+  {
+    "id": "administracion-cambio-de-area",
+    "target": "Asistente administrativo",
+    "vacancy": "Mantener registros actualizados y coordinar con otras áreas el seguimiento de solicitudes.",
+    "profile": { "career": "Servicios educativos" },
+    "work": [{ "role": "Auxiliar de biblioteca", "description": "Documenté cambios en el registro de préstamos.\nCoordiné con el equipo el seguimiento de solicitudes de devolución." }],
+    "evidence": ["prestamos|trazabilidad de cambios", "seguimiento|coordinacion"],
+    "alignment": "administrativ|seguimiento de solicitudes|mantener registros",
+    "forbidden": ["gestione nominas", "factur", "presupuesto", "contratacion de personal"],
+    "reference": "Mantuve actualizado el registro de préstamos y coordiné el seguimiento de devoluciones con el equipo. Busco aportar esa experiencia a la gestión de registros y solicitudes administrativas.",
+    "simulated": "Gestioné nóminas, facturación y presupuestos de la empresa."
+  },
+  {
+    "id": "backend-experiencia-afin",
+    "target": "Backend Developer",
+    "vacancy": "Mantener APIs REST con Node.js y PostgreSQL y ampliar la cobertura de pruebas con Jest.",
+    "profile": { "career": "Desarrollo de software", "technical_skills": ["Node.js", "PostgreSQL", "Jest"] },
+    "work": [{ "role": "Backend Developer", "description": "Desarrollé APIs REST con Node.js y PostgreSQL.\nAutomaticé pruebas con Jest para verificar los endpoints." }],
+    "evidence": ["apis? rest", "jest|pruebas automatizadas"],
+    "alignment": "node js|postgresql|endpoints",
+    "forbidden": ["kubernetes", "arquitecto senior", "millones de usuarios", "mantuve apis", "especializado en [^.]{0,55}mantenimiento"],
+    "reference": "Desarrollé APIs REST con Node.js y PostgreSQL y automaticé pruebas de endpoints con Jest. Puedo contribuir al mantenimiento de las APIs y a ampliar sus pruebas.",
+    "simulated": "Soy arquitecto senior de Kubernetes para millones de usuarios."
+  },
+  {
+    "id": "analisis-primer-empleo",
+    "target": "Practicante de análisis de datos",
+    "vacancy": "Limpiar datos y elaborar informes básicos en Excel. Se aceptan proyectos académicos como evidencia.",
+    "profile": { "career": "Estadística", "technical_skills": ["Excel"] },
+    "academic": [{ "institution": "Instituto ficticio", "degree": "Estadística", "description": "En un proyecto académico limpié registros duplicados y resumí los resultados con tablas dinámicas de Excel." }],
+    "evidence": ["proyecto academico|formacion|estudiante", "registros duplicados|tablas dinamicas|limpieza de datos"],
+    "alignment": "excel|informes|analisis de datos",
+    "forbidden": ["experiencia laboral como analista", "clientes empresariales", "power bi", "lider(e|azgo)", "soy estudiante", "experiencia [^.]{0,60}elaboracion de informes"],
+    "reference": "En un proyecto académico de Estadística limpié registros duplicados y resumí resultados con tablas dinámicas de Excel. Quiero aplicar esa práctica a la preparación de datos e informes como practicante.",
+    "simulated": "Tengo 3 años de experiencia laboral como analista y elaboré tableros en Power BI para clientes empresariales."
+  },
+  {
+    "id": "perfil-sin-evidencia",
+    "target": "Auxiliar de farmacia",
+    "vacancy": "Revisar fechas de vencimiento y apoyar el control de existencias.",
+    "profile": {},
+    "work": [],
+    "evidence": [],
+    "alignment": "",
+    "forbidden": [],
+    "reference": "",
+    "simulated": "Soy profesional con 5 años dispensando medicamentos y atendiendo pacientes."
+  }
+]

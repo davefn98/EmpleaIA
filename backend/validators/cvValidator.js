@@ -29,24 +29,8 @@ const cvWorkExperienceSchema = z.object({
   end_date:   z.string(),
   relevance:  z.enum(['high', 'medium', 'low']),
   bullets:    z.array(z.string().min(1)).max(6),
-}).strict().superRefine((experience, ctx) => {
-  const count = experience.bullets.length;
-  if (count === 0) return;
-
-  const valid = experience.relevance === 'high'
-    ? count >= 3 && count <= 6
-    : experience.relevance === 'medium'
-      ? count >= 1 && count <= 3
-      : count === 1;
-
-  if (!valid) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['bullets'],
-      message: 'Cantidad de bullets incompatible con la relevancia.',
-    });
-  }
-});
+  source_evidence: z.array(z.string()).optional(),
+}).strict();
 
 const aiWorkExperienceSchema = z.object({
   source_id:  z.string(),
@@ -217,6 +201,7 @@ export const generatedCvJsonSchema = {
  */
 export const cvGenerateSchema = z.object({
   profileId:      z.string().min(1),
+  persist:        z.boolean().optional(),
   document_title: z.string().optional(),
   status:         z.string().optional(),
   // cv_style es el objeto de tema del CV (template, colores, fuente…) que envía
@@ -227,6 +212,10 @@ export const cvGenerateSchema = z.object({
   excluded_experience_ids: z.array(z.string()).optional(),
   excluded_skills: z.array(z.string()).optional(),
   candidate_data: candidateDataSchema.optional(),
+  previous_cv: z.object({
+    summary: z.string().max(1200),
+    bullets: z.array(z.string().max(400)).max(12),
+  }).strict().optional(),
   target_job_description: z.string().refine((value) => !value.includes('\0'), {
     message: 'La descripción del puesto contiene un carácter no válido.',
   }).optional().nullable(),
@@ -255,15 +244,22 @@ export const cvUpdateSchema = z.object({
   cv_data:        z.any().optional(),
 });
 
+export const cvSaveSchema = cvUpdateSchema.extend({
+  status: z.enum(['draft', 'downloaded']),
+  cv_data: z.record(z.unknown()),
+}).strict();
+
 // Importación fiel: los bullets completos no tienen el límite del CV adaptado.
 const importedText = z.string();
 const importedDate = z.string().nullable();
 export const importedCvSchema = z.object({
   first_name: importedText, last_name: importedText, email: importedText,
   phone: importedText, location: importedText, linkedin: importedText,
+  portfolio: importedText.optional(),
   career: importedText, target_role: importedText,
   target_job_description: importedText, bio: importedText,
   technical_skills: z.array(importedText), soft_skills: z.array(importedText),
+  certifications: z.array(importedText).optional(),
   work_experience: z.array(z.object({
     company: importedText, role: importedText, start_date: importedText,
     end_date: importedDate, description: importedText,
@@ -284,9 +280,11 @@ const importStringsJson = { type: 'array', items: importTextJson };
 export const importedCvJsonSchema = importObjectSchema({
   first_name: importTextJson, last_name: importTextJson, email: importTextJson,
   phone: importTextJson, location: importTextJson, linkedin: importTextJson,
+  portfolio: importTextJson,
   career: importTextJson, target_role: importTextJson,
   target_job_description: importTextJson, bio: importTextJson,
   technical_skills: importStringsJson, soft_skills: importStringsJson,
+  certifications: importStringsJson,
   work_experience: { type: 'array', items: importObjectSchema({
     company: importTextJson, role: importTextJson, start_date: importTextJson,
     end_date: importDateJson, description: importTextJson, achievements: importStringsJson,

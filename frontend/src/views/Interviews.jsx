@@ -1027,6 +1027,7 @@ export default function Interviews({ setActiveView }) {
   }, [timeRemaining, intState, isPaused, isAiSpeaking, sending, isAnalyzing, currentQuestion]);
 
   // INICIAR ENTREVISTA
+  const missingTargetMessage = 'Completa el puesto objetivo y la descripción de la vacante en Personalización del CV. Luego pulsa «Usar también en cartas y entrevistas».';
   const handleStartInterview = async (type, opts = {}) => {
     if (activeInterview?.interview?.status === 'paused') {
       setErrorMsg('Ya tienes una entrevista pausada. Reanúdala o descártala antes de iniciar una nueva.');
@@ -1039,6 +1040,10 @@ export default function Interviews({ setActiveView }) {
     if (!profile || !profile.first_name || !profile.career) {
       setErrorMsg('Para iniciar una entrevista personalizada, primero completa tu perfil profesional. Redirigiendo a Mi Perfil en 3s...');
       setTimeout(() => setActiveView?.('profile'), 3000);
+      return;
+    }
+    if (!profile.target_role?.trim() || !profile.target_job_description?.trim()) {
+      setErrorMsg(missingTargetMessage);
       return;
     }
 
@@ -1086,7 +1091,7 @@ export default function Interviews({ setActiveView }) {
     } catch (err) {
       const message = err.message || '';
       if (message.includes('perfil') || message.includes('Perfil') || message.includes('Completa')) {
-        setErrorMsg("Tu perfil profesional está incompleto. Por favor completa nombre, carrera, puesto objetivo, descripción del puesto, resumen y al menos 1 habilidad técnica y blanda. Redirigiendo en 5s...");
+        setErrorMsg('Tu perfil profesional está incompleto. Revisa tu nombre, carrera, resumen y que tengas al menos una habilidad técnica y una blanda. Redirigiendo a Mi perfil…');
         setTimeout(() => setActiveView?.('profile'), 5000);
         return;
       }
@@ -1107,6 +1112,7 @@ export default function Interviews({ setActiveView }) {
 
       if (data.success) {
         setFinalScore(data.overallScore ?? null);
+        setDifficultyLevel(data.difficultyLevel || 'intermediate');
         setAiOverallScore(data.aiOverallScore ?? null);
         setGeneralAnalysis(data.generalAnalysis || '');
         setStrengths(data.strengths || []);
@@ -1631,7 +1637,14 @@ export default function Interviews({ setActiveView }) {
       {errorMsg && (
         <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6">
           <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
-          <span>{errorMsg}</span>
+          <div className="space-y-2">
+            <p>{errorMsg}</p>
+            {errorMsg === missingTargetMessage && (
+              <button type="button" onClick={() => setActiveView?.('documents-cv')} className="font-semibold underline cursor-pointer">
+                Ir a Personalización del CV
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -2057,6 +2070,7 @@ export default function Interviews({ setActiveView }) {
                   </span>
                 </span>
                 <h2 className="text-lg font-bold text-slate-900 dark:text-white">Resultados de la entrevista</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-300">Nivel realizado: {difficultyLevel === 'basic' ? 'Básico' : difficultyLevel === 'advanced' ? 'Avanzado' : 'Intermedio'}</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 lg:justify-end">

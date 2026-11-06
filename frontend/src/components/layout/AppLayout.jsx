@@ -4,6 +4,7 @@ import Header from './Header';
 import MobileDrawer from './MobileDrawer';
 import Sidebar from './Sidebar';
 import { getActiveNavItem } from './navigation';
+import { canNavigate } from '../../utils/unsavedChanges';
 
 function getViewportMode() {
   if (typeof window === 'undefined') {
@@ -70,6 +71,7 @@ export default function AppLayout({ user, profile, pathname, onNavigate, theme, 
   };
 
   const handleSignOut = async () => {
+    if (!canNavigate(window, '/login')) return;
     setIsMobileDrawerOpen(false);
     await supabase.auth.signOut();
   };

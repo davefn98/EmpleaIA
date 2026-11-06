@@ -64,8 +64,8 @@ const SKILL_CATEGORY_PATTERNS = {
   architecture: /\b(architecture|arquitectura|microservices|microservicios|solid|ddd|clean architecture|event driven|patrones de dise[nñ]o)\b/i,
   databases: /\b(sql|postgres(?:ql)?|mysql|mariadb|mongodb|redis|oracle|sqlite|database|base de datos|supabase)\b/i,
   integration: /\b(rest|graphql|soap|api|kafka|rabbitmq|webhook|integraci[oó]n)\b/i,
-  testing: /\b(jest|vitest|mocha|junit|pytest|cypress|playwright|selenium|testing|pruebas?)\b/i,
-  devops: /\b(docker|kubernetes|terraform|jenkins|github actions|gitlab ci|ci\/?cd|devops|git)\b/i,
+  testing: /\b(jest|vitest|mocha|junit|pytest|cypress|playwright|selenium|karate|testing|pruebas?)\b/i,
+  devops: /\b(docker|kubernetes|terraform|jenkins|github(?: actions)?|gitlab ci|ci\/?cd|devops|git)\b/i,
   security: /\b(oauth|jwt|owasp|security|seguridad|pentest|iam)\b/i,
   frontend: /\b(react|angular|vue|svelte|javascript|typescript|html|css|tailwind|bootstrap|frontend|next(?:\.js)?)\b/i,
 };
@@ -159,12 +159,26 @@ function skillOrderFromTarget(technicalSkills, targetJobDescription) {
   });
 }
 
-function buildSupportedHeadline(userInputData, technicalSkills) {
-  const role = text(userInputData.personal_info?.target_role || userInputData.personal_info?.career).trim();
-  const highlights = orderedSkillCategories(technicalSkills)
+function targetPosition(value) {
+  const listingDetails = /^(?:sin experiencia|con o sin experiencia|turno\b|full\b|part\b|planilla\b|gana\b|sueldo\b|horario\b|bonos?\b|beneficios?\b|s\/)/;
+  return text(value).split(/\s+\/\s+|[|•\r\n]/).map((part) => part.trim())
+    .find((part) => part && !listingDetails.test(normalize(part))) || '';
+}
+
+function buildSupportedHeadline(userInputData, technicalSkills, categoryOrder) {
+  const roles = uniqueStrings((userInputData.work_experience || []).map(({ role }) => role));
+  const career = text(userInputData.personal_info?.career).trim();
+  const target = targetPosition(userInputData.personal_info?.target_role);
+  const matchingRole = [...roles, career].find((label) => label && normalize(label) === normalize(target));
+  if (target && !matchingRole) return `Objetivo: ${target}`;
+  const role = matchingRole || roles[0] || career;
+  const highlights = categoryOrder
     .flatMap((category) => technicalSkills[category])
     .slice(0, 3);
-  return uniqueStrings([role, ...highlights]).join(' | ');
+  return uniqueStrings([role, ...highlights]).reduce((headline, item) => {
+    if (!headline) return item;
+    return headline.length + item.length + 3 <= 110 ? `${headline} | ${item}` : headline;
+  }, '');
 }
 
 function sourceAcademicRecord(record) {
@@ -177,26 +191,37 @@ function sourceAcademicRecord(record) {
   };
 }
 
-function sourceWorkRecord(record, relevance = 'low', bullets) {
-  const sourceBullets = uniqueStrings([
+function workEvidence(record) {
+  return uniqueStrings([
     ...(Array.isArray(record.achievements) ? record.achievements : []),
+    ...(Array.isArray(record.bullets) ? record.bullets : []),
     record.description,
-  ]);
-  const limits = { high: 6, medium: 3, low: 1 };
-  const selectedBullets = uniqueStrings(bullets === undefined ? sourceBullets : bullets).slice(0, limits[relevance]);
-  const compatibleRelevance = selectedBullets.length === 0
-    ? 'low'
-    : relevance === 'high' && selectedBullets.length < 3
-      ? 'medium'
-      : relevance;
+  ].flatMap((line) => text(line).split(/[\n•▪✓✔]+/).map((item) => item.trim().replace(/^[-–—]\s+/, ''))));
+}
+
+function sourceWorkRecord(record, relevance, singleExperience, bullets = []) {
+  const limit = singleExperience || relevance === 'high' ? 6 : relevance === 'medium' ? 4 : 2;
+  const sourceEvidence = workEvidence(record);
+  const selected = [...bullets];
+  for (const fact of sourceEvidence) {
+    if (selected.length >= limit) break;
+    const terms = [...new Set(evidenceTerms(fact))];
+    const covered = selected.some((bullet) => {
+      if (includesNormalizedPhrase(normalize(bullet), normalize(fact))) return true;
+      const bulletTerms = new Set(evidenceTerms(bullet));
+      return terms.length > 0 && terms.every((term) => bulletTerms.has(term)) && !hasUnsupportedMetric(fact, bullet);
+    });
+    if (!covered) selected.push(fact);
+  }
   return {
     source_id:  text(record.id),
     company:    text(record.company),
     role:       text(record.role),
     start_date: text(record.start_date),
     end_date:   text(record.end_date),
-    relevance: compatibleRelevance,
-    bullets: selectedBullets.slice(0, limits[compatibleRelevance]),
+    relevance,
+    bullets: selected.slice(0, limit),
+    source_evidence: sourceEvidence,
   };
 }
 
@@ -210,17 +235,16 @@ function getCertifications(profile) {
 
 function sourceCorpus(profile, userInputData) {
   return [
-    userInputData.personal_info?.bio || profile.bio,
+    userInputData.personal_info?.bio ?? profile.bio,
     userInputData.personal_info?.career,
-    userInputData.personal_info?.target_role,
     ...(userInputData.skills?.technical || []),
     ...(userInputData.skills?.soft || []),
     ...(userInputData.certifications || getCertifications(profile)),
     ...(userInputData.work_experience || []).flatMap((record) => [
-      record.description,
-      ...(Array.isArray(record.achievements) ? record.achievements : []),
+      record.role,
+      ...workEvidence(record),
     ]),
-    ...(userInputData.academic_background || []).map((record) => record.description),
+    ...(userInputData.academic_background || []).flatMap((record) => [record.degree, record.description]),
   ].filter(Boolean).join(' ');
 }
 
@@ -283,11 +307,50 @@ function hasUnsupportedNamedTerm(value, evidence) {
   });
 }
 
+const SUMMARY_GOAL = /^(?:(?:busco|quiero|me interesa|espero) (?:aplicar|trasladar)|(?:puedo|me permite) (?:aplicar|aportar|contribuir)|estoy preparad[oa] para aplicar)\b/;
+const SUMMARY_BRIDGE = /\b(?:esa|esta|esas|estas|mis|los) (?:experiencia|practica|habilidades|conocimientos) (?:a|al|en|para)\s+/;
+// Terms that change the nature of the claim even when the surrounding words match.
+const SUMMARY_CLAIM_EVIDENCE = [
+  /\b(?:estudiante|actualmente curs\w*|estoy cursando)\b/,
+  /\b(?:mantenimiento|mantuv\w*|mantenia)\b/,
+  /\b(?:informes?|reportes?)\b/,
+];
+
+function summaryStatements(value) {
+  return text(value).split(/(?<=[.!?])\s+|;\s*|,\s*lo que (?=me permite\b)/i)
+    .map((part) => part.trim()).filter(Boolean);
+}
+
+function isSupportedSummary(summary, corpus, vacancy, facts) {
+  const normalizedCorpus = normalize(corpus);
+  if (!summary || !normalizedCorpus) return false;
+
+  const claims = [];
+  for (const statement of summaryStatements(summary)) {
+    const normalized = normalize(statement);
+    if (SUMMARY_GOAL.test(normalized)) {
+      const bridge = SUMMARY_BRIDGE.exec(normalized);
+      const contribution = bridge ? normalized.slice(bridge.index + bridge[0].length) : normalized;
+      // A goal may mention vacancy tasks, but cannot carry a claim about past work.
+      if (hasUnsupportedMetric(statement, '') || /\b(?:experiencia (?:directa )?en|tengo|tiene|he|habia|lidero|realizo|gestiona)\b/.test(contribution)
+        || /[a-záéíóúñ]{2,}[éí](?=\s|[,.;!?]|$)/iu.test(statement)
+        || !hasEvidenceOverlap(contribution, vacancy)) return false;
+      continue;
+    }
+
+    const addsUnsupportedClaim = SUMMARY_CLAIM_EVIDENCE.some((pattern) => pattern.test(normalized) && !pattern.test(normalizedCorpus));
+    if (addsUnsupportedClaim || hasUnsupportedTechnology(statement, corpus) || hasUnsupportedNamedTerm(statement, corpus)
+      || hasUnsupportedMetric(statement, corpus) || !hasEvidenceOverlap(statement, corpus)) return false;
+    claims.push(statement);
+  }
+
+  const factTerms = new Set(evidenceTerms(facts.join(' ')));
+  return claims.length > 0 && (!factTerms.size || evidenceTerms(claims.join(' ')).some((term) => factTerms.has(term)));
+}
+
 function sanitizeBullets(record, bullets) {
-  const evidence = [
-    record.description,
-    ...(Array.isArray(record.achievements) ? record.achievements : []),
-  ].filter(Boolean).join(' ');
+  const evidence = workEvidence(record).join(' ');
+  if (!evidence) return [];
   return uniqueStrings(bullets).filter((bullet) =>
     !hasUnsupportedTechnology(bullet, evidence) &&
     !hasUnsupportedNamedTerm(bullet, evidence) &&
@@ -310,34 +373,111 @@ function relevanceFromSource(record, targetJobDescription) {
   if (targetWords.size === 0) return 'low';
   const recordWords = new Set(normalize([
     record.role,
-    record.description,
-    ...(record.achievements || []),
+    ...workEvidence(record),
   ].join(' ')).split(' '));
   const matches = [...targetWords].filter((word) => recordWords.has(word)).length;
   return matches >= 3 ? 'high' : matches >= 1 ? 'medium' : 'low';
 }
 
+const EXPERIENCE_SIGNALS = [
+  { evidence: /\b(?:resol\w*|solucion\w*|atend\w*)\b.*\b(?:incidencias?|incidentes?|problemas?|fallas?)\b/, vacancy: /inciden|problema|consulta|atencion|soporte/, phrase: 'resolución de incidencias', skill: 'Resolución de problemas' },
+  { evidence: /\b(?:seguimiento|segui|seguir|seguimos)\b.*\b(?:incidencias?|incidentes?|servicios?|casos?|solicitudes?|tickets?)\b/, vacancy: /seguimiento|inciden|consulta|atencion|soporte/, phrase: 'seguimiento operativo', skill: 'Seguimiento operativo', describe: (fact) => /\bservicios? (?:productivos?|en produccion)\b/.test(fact) ? 'seguimiento de servicios en producción' : 'seguimiento operativo' },
+  { evidence: /\b(?:trazabilidad|trace|document\w*)\b.*\b(?:cambios?|incidencias?|procesos?|casos?)\b/, vacancy: /trazabilidad|registro|document|calidad/, phrase: 'registro y trazabilidad de cambios' },
+  { evidence: /\b(?:pases?|despleg\w*|desplieg\w*)\b.*\b(?:produccion|servicios?|contenedores?)\b/, vacancy: /despleg|desplieg|produccion|cloud|aws/, phrase: 'despliegue de servicios' },
+  { evidence: /\bpruebas?\s+automatiz\w*\b/, vacancy: /prueba|testing|calidad/, phrase: 'pruebas automatizadas' },
+  { evidence: /\bintegracion continua\b/, vacancy: /integracion continua|ci cd|devops/, phrase: 'integración continua' },
+  { evidence: /\b(?:coordine|coordinacion|colabore|colaboracion)\b.*\b(?:equipo|equipos|areas)\b/, vacancy: /equipo|coordinacion|colaboracion/, phrase: 'coordinación con equipos', skill: 'Trabajo en equipo' },
+];
+
+const EXPERIENCE_TOOLS = ['AWS', 'Azure', 'GitHub Actions', 'GitHub', 'GitLab CI', 'Docker', 'Kubernetes', 'Karate', 'Playwright', 'Node.js', 'React', 'Python', 'Java', 'PostgreSQL', 'SQL Server', 'Excel'];
+
+function observedCompetencies(work, targetJobDescription) {
+  const facts = work.flatMap(workEvidence).map(normalize);
+  const vacancy = normalize(targetJobDescription);
+  const signals = EXPERIENCE_SIGNALS.flatMap((signal) => {
+    const matchedFacts = facts.filter((fact) => signal.evidence.test(fact));
+    if (!matchedFacts.length) return [];
+    const detail = matchedFacts.map((fact) => signal.describe?.(fact)).find((value) => value && value !== signal.phrase);
+    return [{ ...signal, detail: detail || signal.phrase }];
+  })
+    .sort((left, right) => Number(right.vacancy.test(vacancy)) - Number(left.vacancy.test(vacancy)));
+  const tools = EXPERIENCE_TOOLS.filter((tool) => facts.some((fact) =>
+    isSupported(tool, tool === 'GitHub' ? fact.replace(/\bgithub actions\b/g, '') : fact)
+  ));
+  return { signals, tools };
+}
+
+function transferableSummary(signals, target, previousSummary) {
+  const phrases = signals.slice(0, 3).map(({ detail }) => detail);
+  const [first, second, third] = phrases;
+  const goal = `Busco aplicar esa experiencia en un puesto de ${target}.`;
+  const alternatives = second ? [
+    `Tengo experiencia en ${first} y ${second}. ${goal}`,
+    `Mi experiencia incluye ${second} y ${first}. Me interesa trasladar esas habilidades a un puesto de ${target}.`,
+    third ? `He trabajado en ${third}, ${first} y ${second}. ${goal}`
+      : `Busco un puesto de ${target} donde pueda aportar mi experiencia en ${first} y ${second}.`,
+  ] : [
+    `Tengo experiencia en ${first}. ${goal}`,
+    `Busco un puesto de ${target} donde pueda aplicar mi experiencia en ${first}.`,
+  ];
+  const previousIndex = alternatives.findIndex((summary) => normalize(summary) === normalize(previousSummary));
+  return alternatives[(previousIndex + 1) % alternatives.length];
+}
+
+function summaryFacts(userInputData) {
+  return uniqueStrings([
+    ...(userInputData.work_experience || []).flatMap((record) => workEvidence(record).flatMap(summaryStatements)),
+    ...(userInputData.academic_background || []).flatMap(({ description }) => summaryStatements(description)),
+  ]);
+}
+
+function supportedSummary(profile, userInputData, skills, { target = '', vacancy = '', previousSummary = '' } = {}) {
+  const bio = text(userInputData.personal_info?.bio ?? profile.bio).trim();
+  const role = (userInputData.work_experience || []).map(({ role }) => text(role).trim()).find(Boolean);
+  const education = (userInputData.academic_background || []).map(({ degree }) => text(degree).trim()).find(Boolean);
+  const career = text(userInputData.personal_info?.career ?? profile.career).trim();
+  const introduction = role ? `Experiencia como ${role}.` : education ? `Formación en ${education}.` : career ? `Perfil profesional en ${career}.` : '';
+  const vacancyTerms = new Set(evidenceTerms(vacancy));
+  const facts = summaryFacts(userInputData).filter((fact) => fact.length <= 280)
+    .map((fact) => ({ fact, matches: evidenceTerms(fact).filter((term) => vacancyTerms.has(term)).length }))
+    .sort((left, right) => right.matches - left.matches).slice(0, 2)
+    .map(({ fact }) => `${fact.replace(/[.!?]+$/, '')}.`);
+  const highlights = uniqueStrings(skills).slice(0, 4);
+  const knowledge = highlights.length ? `Conocimientos en ${highlights.join(', ')}.` : '';
+  if (!facts.length) return bio || [introduction, knowledge].filter(Boolean).join(' ');
+
+  const goal = target ? `Busco aplicar esa experiencia en un puesto de ${target}.` : '';
+  const alternateGoal = target ? `Me interesa aportar esa práctica en un puesto de ${target}.` : '';
+  const first = [...facts, goal || knowledge].filter(Boolean).join(' ');
+  const reversedFacts = [...facts].reverse();
+  const second = [...reversedFacts, alternateGoal || introduction || knowledge].filter(Boolean).join(' ');
+  return normalize(first) === normalize(previousSummary) ? second : first;
+}
+
 /** Fallback honesto que cumple exactamente el contrato persistido. */
 export function buildFallbackCv(profile, userInputData, targetJobDescription = '') {
-  const roleName = userInputData.personal_info?.target_role || profile.target_role || '';
-  const careerName = userInputData.personal_info?.career || profile.career || '';
-  const technicalSkills = categorizeSkills(userInputData.skills?.technical || profile.technical_skills || []);
+  const sourceWork = userInputData.work_experience || [];
+  const { signals, tools } = observedCompetencies(sourceWork, targetJobDescription);
+  const technicalSkills = categorizeSkills([...(userInputData.skills?.technical || profile.technical_skills || []), ...tools]);
+  const categoryOrder = skillOrderFromTarget(technicalSkills, targetJobDescription);
   return {
-    headline: buildSupportedHeadline(userInputData, technicalSkills) || roleName || careerName,
-    professional_summary: userInputData.personal_info?.bio || profile.bio || '',
-    work_experience: (userInputData.work_experience || []).map((record) =>
-      sourceWorkRecord(record, relevanceFromSource(record, targetJobDescription))
+    headline: buildSupportedHeadline(userInputData, technicalSkills, categoryOrder),
+    professional_summary: supportedSummary(profile, userInputData, categoryOrder.flatMap((category) => technicalSkills[category]), {
+      target: targetPosition(userInputData.personal_info?.target_role), vacancy: targetJobDescription,
+    }),
+    work_experience: sourceWork.map((record) =>
+      sourceWorkRecord(record, relevanceFromSource(record, targetJobDescription), sourceWork.length === 1)
     ),
     academic_background: (userInputData.academic_background || []).map(sourceAcademicRecord),
     technical_skills: technicalSkills,
-    technical_skill_order: skillOrderFromTarget(technicalSkills, targetJobDescription),
-    soft_skills: uniqueStrings(userInputData.skills?.soft || profile.soft_skills || []),
+    technical_skill_order: categoryOrder,
+    soft_skills: uniqueStrings([...(userInputData.skills?.soft || profile.soft_skills || []), ...signals.map(({ skill }) => skill)]),
     certifications: uniqueStrings(userInputData.certifications || getCertifications(profile)),
   };
 }
 
 /** Valida el JSON de IA y repone todos los campos inmutables desde la fuente. */
-export function parseAndReconcileGeneratedCv(rawJson, profile, userInputData) {
+export function parseAndReconcileGeneratedCv(rawJson, profile, userInputData, targetJobDescription = '', excludedSkillKeys = new Set(), previousSummary = '') {
   const parsedJson = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
   const generated = aiGeneratedCvSchema.parse(parsedJson);
   const sourceWork = userInputData.work_experience || [];
@@ -360,52 +500,88 @@ export function parseAndReconcileGeneratedCv(rawJson, profile, userInputData) {
     reconciledWork.push(sourceWorkRecord(
       sourceWork[sourceIndex],
       generatedRecord.relevance,
+      sourceWork.length === 1,
       sanitizeBullets(sourceWork[sourceIndex], generatedRecord.bullets)
     ));
   }
 
   sourceWork.forEach((record, index) => {
-    if (!usedSourceIndexes.has(index)) reconciledWork.push(sourceWorkRecord(record));
+    if (!usedSourceIndexes.has(index)) {
+      reconciledWork.push(sourceWorkRecord(record, relevanceFromSource(record, targetJobDescription), sourceWork.length === 1));
+    }
   });
 
   const corpus = sourceCorpus(profile, userInputData);
-  const usedSkills = new Set();
-  let technicalSkills = emptyTechnicalSkills();
+  const target = targetPosition(userInputData.personal_info?.target_role);
+  const vacancy = normalize(`${target} ${targetJobDescription}`);
+  const { signals, tools } = observedCompetencies(sourceWork, vacancy);
+  const usedSkills = new Set(excludedSkillKeys);
+  const technicalSkills = emptyTechnicalSkills();
   for (const category of CV_TECHNICAL_SKILL_CATEGORIES) {
     technicalSkills[category] = filterSupported(generated.technical_skills[category], corpus, usedSkills);
   }
-  if (Object.values(technicalSkills).every((skills) => skills.length === 0)) {
-    technicalSkills = categorizeSkills(userInputData.skills?.technical || []);
+  const omittedSkills = categorizeSkills(filterSupported([...(userInputData.skills?.technical || []), ...tools], corpus, usedSkills));
+  for (const category of CV_TECHNICAL_SKILL_CATEGORIES) {
+    technicalSkills[category].push(...omittedSkills[category]);
+  }
+  const categoryOrder = orderedSkillCategories(technicalSkills, generated.technical_skill_order);
+  const highlights = categoryOrder.flatMap((category) => technicalSkills[category]);
+  const observedSoftSkills = uniqueStrings([...(userInputData.skills?.soft || []), ...signals.map(({ skill }) => skill)])
+    .filter((skill) => !excludedSkillKeys.has(normalize(skill)));
+  const certifications = uniqueStrings(userInputData.certifications || getCertifications(profile));
+  const summary = generated.professional_summary.trim();
+  const facts = summaryFacts(userInputData);
+  const transferableSignals = signals.filter(({ vacancy: pattern }) => pattern.test(vacancy));
+  const differentRole = target && sourceWork.some(({ role }) => text(role).trim())
+    && !sourceWork.some(({ role }) => normalize(role) === normalize(target));
+  const shouldLeadWithTransferableSkills = differentRole && transferableSignals.length > 0;
+  const repeatsSummary = Boolean(previousSummary) && normalize(summary) === normalize(previousSummary);
+  const leadsWithPastRole = sourceWork.some(({ role }) => {
+    const roleName = normalize(role);
+    return roleName && includesNormalizedPhrase(normalize(summary.split(/[.!?]/)[0]), roleName);
+  });
+  const normalizedSummary = normalize(summary);
+  const coveredSignals = transferableSignals.filter(({ evidence, phrase, detail }) =>
+    evidence.test(normalizedSummary) || includesNormalizedPhrase(normalizedSummary, normalize(phrase))
+    || includesNormalizedPhrase(normalizedSummary, normalize(detail))
+  ).length;
+  const coversTransferableEvidence = coveredSignals >= Math.min(2, transferableSignals.length);
+  const tooBrief = transferableSignals.length >= 2 && normalizedSummary.split(' ').length < 16;
+  const validSummary = isSupportedSummary(summary, corpus, vacancy, facts);
+  let professionalSummary = validSummary && !repeatsSummary ? summary
+    : supportedSummary(profile, userInputData, highlights, { target, vacancy, previousSummary });
+  if (shouldLeadWithTransferableSkills && (!validSummary || leadsWithPastRole || !coversTransferableEvidence || tooBrief || repeatsSummary)) {
+    professionalSummary = transferableSummary(transferableSignals, target, previousSummary);
   }
 
   const result = {
-    headline: buildSupportedHeadline(userInputData, technicalSkills),
-    professional_summary: !generated.professional_summary.trim() ||
-      hasUnsupportedTechnology(generated.professional_summary, corpus) ||
-      hasUnsupportedNamedTerm(generated.professional_summary, corpus) ||
-      hasUnsupportedMetric(generated.professional_summary, corpus) ||
-      !hasEvidenceOverlap(generated.professional_summary, corpus)
-      ? userInputData.personal_info?.bio || profile.bio || ''
-      : generated.professional_summary,
+    headline: buildSupportedHeadline(userInputData, technicalSkills, categoryOrder),
+    professional_summary: professionalSummary,
     work_experience: reconciledWork,
     academic_background: (userInputData.academic_background || []).map(sourceAcademicRecord),
     technical_skills: technicalSkills,
-    technical_skill_order: orderedSkillCategories(technicalSkills, generated.technical_skill_order),
-    soft_skills: filterSupported(generated.soft_skills, corpus),
-    certifications: filterSupported(
-      generated.certifications,
-      uniqueStrings(userInputData.certifications || getCertifications(profile)).join(' ')
-    ),
+    technical_skill_order: categoryOrder,
+    soft_skills: uniqueStrings([
+      ...filterSupported(generated.soft_skills, `${corpus} ${observedSoftSkills.join(' ')}`, new Set(excludedSkillKeys)),
+      ...observedSoftSkills,
+    ]),
+    certifications: uniqueStrings([...filterSupported(generated.certifications, certifications.join(' ')), ...certifications]),
   };
   return generatedCvSchema.parse(result);
 }
 
-export function buildCvUserPrompt(userInputData, targetJobDescription, focusDescription) {
+export function buildCvUserPrompt(userInputData, targetJobDescription, focusDescription, previousCv) {
+  const { personal_info: { target_role, career, bio } = {}, ...professionalData } = userInputData;
   return [
+    `PUESTO_OBJETIVO:\n${targetPosition(target_role) || '(puesto no proporcionado)'}`,
     `TARGET_JOB_DESCRIPTION:\n${targetJobDescription || '(vacante no proporcionada)'}`,
     `ENFOQUE DE PRESENTACION:\n${focusDescription}`,
-    `DATOS DEL CANDIDATO (unica fuente factual):\n${JSON.stringify(userInputData)}`,
-    'Genera el CV aplicando matching ATS y todas las reglas de fidelidad del sistema.',
+    `DATOS DEL CANDIDATO (unica fuente factual):\n${JSON.stringify({ personal_info: { career, bio }, ...professionalData })}`,
+    'Ordena la evidencia por pertinencia y genera el CV en JSON según las reglas del sistema.',
+    ...(previousCv ? [
+      `VERSIÓN ANTERIOR (referencia de redacción):\n${JSON.stringify(previousCv)}`,
+      'Redacta una alternativa para Sobre mí y las viñetas. Cambia la estructura y prioriza otros hechos pertinentes cuando los datos lo permitan. Conserva nombres técnicos y hechos comprobables. Usa la versión anterior solo para evitar repetir la redacción y mantén los datos del candidato como única fuente factual.',
+    ] : []),
   ].join('\n\n');
 }
 
@@ -525,7 +701,7 @@ export function buildFallbackParsedData(cvText) {
 // ---------------------------------------------------------------------------
 
 /**
- * Genera un CV con IA y lo persiste en la base de datos.
+ * Genera un CV con IA y lo guarda salvo que se solicite solo la vista previa.
  *
  * Si la IA falla, usa el fallback honesto (datos reales del usuario).
  * Si la persistencia falla por columnas de metadatos faltantes (migración
@@ -545,6 +721,7 @@ export async function generateCv({
   db, 
   userId, 
   profileId, 
+  persist = true,
   document_title, 
   status, 
   cv_style,
@@ -553,6 +730,7 @@ export async function generateCv({
   excluded_experience_ids,
   excluded_skills,
   candidate_data,
+  previous_cv,
   target_job_description,
   aiGenerate = generateWithFallback,
 }) {
@@ -582,7 +760,7 @@ export async function generateCv({
     personal_info: {
       first_name:  candidate_data?.personal_info?.first_name ?? profile.first_name,
       last_name:   candidate_data?.personal_info?.last_name ?? profile.last_name,
-      email:       candidate_data?.personal_info?.email ?? profile.email,
+      email:       candidate_data?.personal_info?.email ?? profile.contact_email ?? profile.email,
       phone:       candidate_data?.personal_info?.phone ?? profile.phone,
       location:    candidate_data?.personal_info?.location ?? profile.location,
       linkedin:    candidate_data?.personal_info?.linkedin ?? profile.linkedin,
@@ -603,7 +781,7 @@ export async function generateCv({
       .filter((record) => !excludedExperienceIds.has(text(record.id))),
   };
 
-  // 4. Invocar a la IA; fallback honesto si la IA no está disponible
+  // 4. Invocar a la IA; un fallo no debe persistir una plantilla como éxito IA.
   let cvJson;
   try {
     const focusLabel = cv_focus || 'ATS';
@@ -617,7 +795,7 @@ export async function generateCv({
       useCase:   'cv_generation',
       messages:  [
         { role: 'system', content: SYSTEM_PROMPT_CV },
-        { role: 'user', content: buildCvUserPrompt(userInputData, targetJobDescription, focusDescription) },
+        { role: 'user', content: buildCvUserPrompt(userInputData, targetJobDescription, focusDescription, previous_cv) },
       ],
       db,
       userId,
@@ -625,13 +803,10 @@ export async function generateCv({
       responseSchema: generatedCvJsonSchema,
       maxTokens: 4000,
     });
-    cvJson = parseAndReconcileGeneratedCv(cvJsonText, profile, userInputData);
+    cvJson = parseAndReconcileGeneratedCv(cvJsonText, profile, userInputData, targetJobDescription, excludedSkillKeys, previous_cv?.summary);
   } catch (apiError) {
-    console.warn(
-      '⚠️ Error en generación de CV por IA. Usando SOLO los datos reales del perfil como respaldo. Detalle:',
-      apiError.message
-    );
-    cvJson = generatedCvSchema.parse(buildFallbackCv(profile, userInputData, targetJobDescription));
+    console.warn('[cvService] Falló la generación IA:', { code: apiError.code || 'INVALID_AI_RESPONSE' });
+    throw appError('No se pudo generar un CV válido con IA. Tus datos y el documento anterior se conservan; vuelve a intentarlo.', 502, 'DOCUMENT_AI_UNAVAILABLE');
   }
 
   cvJson = persistedCvSchema.parse({
@@ -645,18 +820,26 @@ export async function generateCv({
     cv_focus: cv_focus || 'ATS',
   });
 
-  // 5. Guardar en la base de datos.
+  if (!persist) return { cvId: null, cvData: cvJson };
+
+  const defaultTitle = `CV ${profile.first_name || 'Egresado'} - ${custom_target_role || profile.target_role || profile.career || 'TI'}`;
+  const savedCv = await saveCv({ db, profileId, cvData: cvJson, documentTitle: document_title || defaultTitle, status, cvStyle: cv_style });
+  return { cvId: savedCv.id, cvData: cvJson };
+}
+
+export async function saveCv({ db, profileId, cvData, documentTitle, status, cvStyle }) {
   // Si el esquema real no tiene alguna columna de metadatos (migración
   // supabase/migration_fix_all.sql pendiente), se reintenta sin esa columna
   // para no bloquear la generación: el CV se guarda con los campos que sí
   // existen. profile_id y cv_data son parte del esquema base y nunca se omiten.
-  const defaultTitle = `CV ${profile.first_name || 'Egresado'} - ${custom_target_role || profile.target_role || profile.career || 'TI'}`;
+  const personal = cvData.personal_info;
+  const defaultTitle = `CV ${text(personal?.first_name) || 'Egresado'}${personal?.target_role ? ` - ${personal.target_role}` : ''}`;
   const insertPayload = {
     profile_id:     profileId,
-    cv_data:        cvJson,
-    document_title: document_title || defaultTitle,
+    cv_data:        cvData,
+    document_title: documentTitle || defaultTitle,
     status:         status    || 'generated',
-    cv_style:       cv_style  || null,
+    cv_style:       cvStyle   || null,
   };
   const REQUIRED_COLUMNS = ['profile_id', 'cv_data'];
 
@@ -701,7 +884,7 @@ export async function generateCv({
     );
   }
 
-  return { cvId: savedCv.id, cvData: cvJson };
+  return savedCv;
 }
 
 /**

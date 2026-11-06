@@ -113,6 +113,46 @@ test('Extracción PDF de dos páginas conserva la responsabilidad final', async 
   for (const line of responsibilities) assert.ok(result.includes(line), line);
 });
 
+test('La importación entrega los campos de contacto, biografía y estudios sin completar los que faltan', async () => {
+  const complete = {
+    ...fixture(),
+    email: 'cv@example.test', phone: '+51 900 000 000', location: 'Lima, Perú',
+    bio: 'Desarrollo APIs para sistemas de inventario.',
+    academic_background: [{
+      institution: 'Instituto de prueba', degree: 'Desarrollo de Software',
+      start_date: '2022', end_date: '2025', description: '',
+    }],
+  };
+  const completeText = [cvText, complete.email, complete.phone, complete.location, complete.bio,
+    complete.academic_background[0].institution, complete.academic_background[0].degree].join('\n');
+  const txt = await extractCvText({ buffer: Buffer.from(completeText), mimetype: 'text/plain', originalname: 'cv-completo.txt' });
+  const { parsedData: populated } = await parseCvRaw({ cvText: txt, generate: async () => JSON.stringify(complete) });
+  assert.equal(populated.email, complete.email);
+  assert.equal(populated.phone, complete.phone);
+  assert.equal(populated.bio, complete.bio);
+  assert.deepEqual(populated.academic_background, complete.academic_background);
+
+  const pdf = await extractCvText({
+    buffer: await readFile(new URL('./fixtures/cv-import-synthetic.pdf', import.meta.url)),
+    mimetype: 'application/pdf', originalname: 'cv-sintetico.pdf',
+  });
+  const { parsedData: fields } = await parseCvRaw({ cvText: pdf, generate: async () => JSON.stringify(fixture()) });
+  assert.equal(fields.email, '');
+  assert.equal(fields.phone, '');
+  assert.equal(fields.location, '');
+  assert.equal(fields.bio, '');
+  assert.deepEqual(fields.academic_background, []);
+  assert.equal(fields.work_experience[0].description.split('\n').length, 7);
+
+  const body = fullProfileUpdateSchema.parse({
+    profile: { first_name: fields.first_name, last_name: fields.last_name, career: '',
+      contact_email: fields.email, phone: fields.phone, bio: fields.bio },
+    academic_background: fields.academic_background, work_experience: fields.work_experience,
+  });
+  assert.deepEqual(body.profile, { first_name: 'Ana', last_name: 'Prueba Perez', career: '', contact_email: '', phone: '', bio: '' });
+  assert.deepEqual(body.academic_background, []);
+});
+
 test('Extracción DOCX conserva las siete responsabilidades', async () => {
   const path = new URL('./fixtures/cv-import-synthetic.docx', import.meta.url);
   const result = await extractCvText({ buffer: await readFile(path), mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', originalname: 'cv-sintetico.docx' });

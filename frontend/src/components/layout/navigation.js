@@ -29,7 +29,7 @@ export const navigationGroups = [
         name: 'Mi perfil',
         icon: User,
         path: '/profile/view',
-        match: (pathname) => pathname === '/profile/view',
+        match: (pathname) => pathname === '/profile/view' || pathname === '/profile/edit',
       },
     ],
   },

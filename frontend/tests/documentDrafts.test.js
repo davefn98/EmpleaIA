@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCvDocumentData, restoreCvDocument, restoreCvTheme, restoreLetterDocument, updateCvDocumentData, readStoredCvTheme } from '../src/utils/documentDrafts.js';
+import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, updateCvDocumentData, readStoredCvTheme } from '../src/utils/documentDrafts.js';
 
 const generated = {
   headline: 'Backend Engineer | AWS', professional_summary: 'Resumen de la versión guardada',
@@ -46,6 +46,62 @@ test('un borrador antiguo no inventa datos personales que no fueron guardados', 
   assert.equal(restored.first_name, '');
   assert.equal(restored.email, '');
   assert.equal(restored.target_role, generated.headline);
+});
+
+test('reabrir la copia conserva las habilidades agrupadas y los registros ocultos para editarlos de nuevo', () => {
+  const original = createCvDocumentData(generated, personal);
+  const copy = createCvDocumentData({
+    ...original,
+    technical_skills: [{ key: 'backend', label: 'Backend', skills: ['Node.js', 'API REST'] }],
+    work_experience: original.work_experience.map((entry) => ({ ...entry, hidden_from_cv: true }))
+  }, personal);
+  const restored = restoreCvDocument(JSON.parse(JSON.stringify(copy)));
+  assert.deepEqual(restored.technical_skills, ['Node.js', 'API REST']);
+  assert.equal(restored.work_experience[0].hidden_from_cv, true);
+  assert.equal(original.work_experience[0].hidden_from_cv, undefined);
+  assert.deepEqual(original.technical_skills, generated.technical_skills);
+});
+
+test('regenerar envía los cambios del CV y conserva las secciones editadas, incluso tras reabrir el borrador', () => {
+  const original = createCvDocumentData(generated, personal);
+  const editor = restoreCvDocument(original);
+  const edited = applyManualCvEdits(original, {
+    professional_summary: 'Resumen editado',
+    technical_skills: [{ key: 'backend', label: 'Backend', skills: ['API REST'] }],
+    soft_skills: [],
+    work_experience: [
+      { id: 'nuevo', role: 'Soporte', bullets: ['Viñeta corregida'], source_evidence: ['Redacción anterior'] },
+      { id: 'oculto', role: 'Experiencia oculta', hidden_from_cv: true }
+    ],
+    academic_background: [{ degree: 'Estudio agregado', start_date: '2025-03' }],
+  });
+  const reopened = JSON.parse(JSON.stringify(edited));
+  const { candidate, preservedContent } = prepareCvGeneration(editor, reopened, {});
+  assert.equal(candidate.personal_info.bio, 'Resumen editado');
+  assert.deepEqual(candidate.skills, { technical: ['API REST'], soft: [] });
+  assert.deepEqual(candidate.work_experience.map(({ role, achievements }) => [role, achievements]), [['Soporte', ['Viñeta corregida']]]);
+  assert.equal(candidate.academic_background[0].degree, 'Estudio agregado');
+
+  const regenerated = { ...generated, headline: 'Nuevo encabezado', ...preservedContent };
+  assert.equal(regenerated.headline, 'Nuevo encabezado');
+  assert.equal(regenerated.professional_summary, 'Resumen editado');
+  assert.deepEqual(regenerated.work_experience, edited.work_experience);
+  assert.deepEqual(regenerated.technical_skills, edited.technical_skills);
+  assert.deepEqual(regenerated.soft_skills, []);
+  assert.deepEqual(regenerated.academic_background, edited.academic_background);
+  assert.equal(prepareCvGeneration(editor, regenerated, {}).candidate.personal_info.bio, 'Resumen editado');
+});
+
+test('regenerar excluye las secciones ocultas y conserva el contenido para volver a mostrarlo', () => {
+  const original = createCvDocumentData(generated, personal);
+  const editor = restoreCvDocument(original);
+  const { candidate, preservedContent } = prepareCvGeneration(editor, original, { experience: false, skillsTech: false });
+  assert.deepEqual(candidate.work_experience, []);
+  assert.deepEqual(candidate.skills.technical, []);
+  assert.deepEqual(candidate.certifications, []);
+  assert.deepEqual(preservedContent.work_experience, original.work_experience);
+  assert.deepEqual(preservedContent.technical_skills, original.technical_skills);
+  assert.equal(Object.hasOwn(preservedContent, 'professional_summary'), false);
 });
 
 test('un diseño parcial no hereda secciones ocultas de otro documento', () => {

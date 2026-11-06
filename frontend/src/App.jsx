@@ -2,11 +2,11 @@ import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { supabase } from './utils/supabaseClient';
 import { apiRequest } from './utils/api';
 import { normalizeProfile } from './utils/userData';
+import { canNavigate } from './utils/unsavedChanges';
 import AppLayout from './components/layout/AppLayout';
 import Landing from './views/Landing';
 import Login from './views/Login';
 const Dashboard = lazy(() => import('./views/Dashboard'));
-const Profile = lazy(() => import('./views/Profile'));
 const ProfileView = lazy(() => import('./views/ProfileView'));
 const CvCustomize = lazy(() => import('./views/CvCustomize'));
 const Documents = lazy(() => import('./views/Documents'));
@@ -20,6 +20,8 @@ import { BookOpen, Sparkles, TrendingUp, FileText, MessageSquare, Clock, Mail } 
 function App() {
   const [user, setUser] = useState(null);
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
+  const currentPathRef = useRef(currentPath);
+  useEffect(() => { currentPathRef.current = currentPath; }, [currentPath]);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
   // Permite que el modal de inactividad resetee los timers definidos en el efecto 2.b
@@ -52,6 +54,8 @@ function App() {
 
   // Navegar a una ruta actualizando el historial
   const navigateTo = (path) => {
+    if (path === window.location.pathname) return;
+    if (!canNavigate(window, path)) return;
     window.history.pushState({}, '', path);
     setCurrentPath(path);
   };
@@ -85,6 +89,7 @@ function App() {
   } else {
     if (currentPath === '/profile' || currentPath === '/mi-perfil') activeView = 'profile-view';
     else if (currentPath === '/profile/view') activeView = 'profile-view'; // HU06 view profile
+    else if (currentPath === '/profile/edit') activeView = 'profile';
     else if (currentPath === '/documents/cv/customize') activeView = 'cv-customize'; // HU15 customizer
     else if (currentPath === '/documents/cv' || currentPath === '/generar-documentos/cv') activeView = 'documents-cv';
     else if (currentPath === '/documents/cover-letter' || currentPath === '/generar-documentos/carta') activeView = 'documents-cover-letter';
@@ -115,6 +120,10 @@ function App() {
   useEffect(() => {
     // Escuchar cambios de historial en el navegador (atrás/adelante)
     const handlePopState = () => {
+      if (!canNavigate(window, window.location.pathname)) {
+        window.history.pushState({}, '', currentPathRef.current);
+        return;
+      }
       setCurrentPath(window.location.pathname);
     };
     window.addEventListener('popstate', handlePopState);
@@ -398,7 +407,7 @@ function App() {
 
         {activeView === 'dashboard' && <Dashboard setActiveView={setActiveView} />}
         
-        {activeView === 'profile' && <Profile navigateTo={navigateTo} />}
+        {activeView === 'profile' && <Documents key="profile-editor" mode="profile" initialDocType="cv" navigateTo={navigateTo} />}
 
         {activeView === 'profile-view' && <ProfileView navigateTo={navigateTo} />}
 
@@ -649,7 +658,7 @@ function App() {
                 <BookOpen className="h-12 w-12 text-slate-350 mx-auto animate-pulse" />
                 <h3 className="text-lg font-bold text-slate-900">Completa tu perfil para recibir recursos personalizados.</h3>
                 <p className="text-slate-500 text-xs leading-relaxed">
-                  Registra tu carrera, puesto objetivo y habilidades en "Mi Perfil" para que la IA sugiera materiales de estudio.
+                  Completa tu carrera y habilidades en Mi perfil. Guarda tu puesto objetivo en Personalización del CV para recibir materiales de estudio relacionados.
                 </p>
               </div>
             ) : (

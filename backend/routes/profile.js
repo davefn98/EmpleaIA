@@ -117,11 +117,17 @@ router.put('/profile/:userId/full', requireAuth, async (req, res) => {
       details: parsed.error.errors
     });
   }
-  const { data, error } = await req.db.rpc('replace_current_user_profile_data', {
+  const hasContactEmail = Object.hasOwn(parsed.data.profile, 'contact_email');
+  const rpc = hasContactEmail ? 'replace_current_user_profile_data_v3' : 'replace_current_user_profile_data_v2';
+  const { data, error } = await req.db.rpc(rpc, {
     p_profile: parsed.data.profile, p_academic: parsed.data.academic_background, p_work: parsed.data.work_experience,
   });
   if (error) {
     console.error('[PUT /profile/:userId/full] Error transaccional:', error);
+    if (error.code === 'PGRST202' || error.code === '42883') {
+      const migration = hasContactEmail ? 'v14' : 'v13';
+      return res.status(503).json({ success: false, code: 'PROFILE_SCHEMA_UPDATE_REQUIRED', error: `Falta aplicar la migración ${migration} en Supabase. Tus cambios siguen en el formulario.` });
+    }
     return res.status(500).json({ success: false, code: 'PROFILE_UPDATE_FAILED', error: 'No se pudieron guardar los datos profesionales.' });
   }
   return res.json({ success: true, profile: data });

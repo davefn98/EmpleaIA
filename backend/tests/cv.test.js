@@ -18,10 +18,12 @@ const {
   buildFallbackCv,
   buildFallbackParsedData,
   generateCv,
+  saveCv,
   parseAndReconcileGeneratedCv,
 } = await import('../services/cvService.js');
 const {
   cvGenerateSchema,
+  cvSaveSchema,
   generatedCvJsonSchema,
   generatedCvSchema,
   persistedCvSchema,
@@ -280,8 +282,9 @@ test('parseAndReconcileGeneratedCv: restaura experiencia y educación y elimina 
     role: 'Desarrollador junior',
     start_date: '2023-01-01',
     end_date: '',
-    relevance: 'medium',
+    relevance: 'high',
     bullets: generated.work_experience[0].bullets.slice(0, 2),
+    source_evidence: ['Reduje la latencia en 20%.', 'Desarrollé APIs con Node.js.'],
   });
   assert.deepEqual(reconciled.academic_background, [{
     institution: 'Instituto real',
@@ -295,17 +298,133 @@ test('parseAndReconcileGeneratedCv: restaura experiencia y educación y elimina 
   assert.equal(reconciled.technical_skill_order[0], 'backend');
   assert.deepEqual(reconciled.soft_skills, ['Liderazgo']);
   assert.deepEqual(reconciled.certifications, ['AWS Cloud Practitioner']);
-  assert.equal(reconciled.headline, 'Backend Developer | Node.js');
-  assert.equal(reconciled.professional_summary, 'Backend con Node.js');
+  assert.equal(reconciled.headline, 'Objetivo: Backend Developer');
+  assert.match(reconciled.professional_summary, /Reduje la latencia en 20%/);
+  assert.match(reconciled.professional_summary, /Desarrollé APIs con Node\.js/);
+  assert.doesNotMatch(reconciled.professional_summary, /Kubernetes|10 años/);
 });
 
 test('buildCvUserPrompt: separa la vacante de la fuente factual', () => {
-  const prompt = buildCvUserPrompt({ skills: { technical: ['Node.js'] } }, 'Se requiere Kubernetes', 'ATS');
+  const prompt = buildCvUserPrompt({
+    personal_info: { target_role: 'Especialista Kubernetes', career: 'Ingeniería', email: 'test@example.com' },
+    skills: { technical: ['Node.js'] },
+  }, 'Se requiere Kubernetes', 'ATS');
+  assert.match(prompt, /PUESTO_OBJETIVO:\nEspecialista Kubernetes/);
   assert.match(prompt, /TARGET_JOB_DESCRIPTION:\nSe requiere Kubernetes/);
-  assert.match(prompt, /DATOS DEL CANDIDATO \(unica fuente factual\):/);
+  const factualBlock = prompt.split('DATOS DEL CANDIDATO (unica fuente factual):\n')[1];
+  assert.match(factualBlock, /Node\.js/);
+  assert.doesNotMatch(factualBlock, /Kubernetes|test@example\.com/);
 });
 
-test('generateCv: JSON inválido activa fallback, usa vacante del perfil y persiste contrato válido', async () => {
+test('el resumen admite una tarea de la vacante como objetivo, pero no como experiencia', () => {
+  const source = {
+    personal_info: { target_role: 'Asistente de logística' },
+    work_experience: [{ role: 'Auxiliar de almacén', description: 'Registré entradas y salidas de materiales. Verifiqué guías de despacho.' }],
+  };
+  const vacancy = 'Apoyar el control de inventario y el seguimiento de entregas con SAP.';
+  const facts = 'Registré entradas y salidas de materiales y verifiqué guías de despacho.';
+  const accepted = `${facts} Busco aplicar esa experiencia al control de inventario con SAP.`;
+  const result = (summary) => parseAndReconcileGeneratedCv(emptyGeneratedCv({ professional_summary: summary }), {}, source, vacancy).professional_summary;
+  assert.equal(result(accepted), accepted);
+
+  const invented = `${facts} Busco aplicar esa experiencia al control de inventario con SAP, donde ya lideré el seguimiento de entregas.`;
+  assert.doesNotMatch(result(invented), /SAP|lideré/);
+  assert.doesNotMatch(result(`${facts} Tengo experiencia con SAP.`), /SAP/);
+  assert.doesNotMatch(result(`${facts} Busco aplicar mi experiencia en SAP al control de inventario.`), /SAP/);
+});
+
+test('el resumen de primer empleo conserva el proyecto sin inferir estudios en curso ni experiencia laboral', () => {
+  const source = {
+    personal_info: { career: 'Estadística', target_role: 'Practicante de análisis de datos' },
+    academic_background: [{
+      degree: 'Estadística',
+      description: 'En un proyecto académico limpié registros duplicados y resumí resultados con tablas dinámicas de Excel.',
+    }],
+  };
+  const vacancy = 'Limpiar datos y elaborar informes en Excel.';
+  const response = emptyGeneratedCv({ professional_summary: 'Soy estudiante de Estadística con experiencia en elaboración de informes en Excel.' });
+  const result = parseAndReconcileGeneratedCv(response, {}, source, vacancy);
+  assert.match(result.professional_summary, /proyecto académico.*registros duplicados.*tablas dinámicas/);
+  assert.doesNotMatch(result.professional_summary, /estudiante|elaboración de informes/);
+  assert.deepEqual(result.work_experience, []);
+});
+
+test('regenerar pide una redacción distinta y conserva la evidencia original', async () => {
+  const profileId = 'profile-1';
+  const fact = 'Resolví incidencias de producción y documenté cambios en GitHub.';
+  const profile = { id: profileId, career: 'Desarrollo de software', target_role: 'Soporte técnico' };
+  const db = createCvDb({ profile, work: [{ id: 'exp-1', role: 'Backend Developer', description: fact }] });
+  const calls = [];
+  const summaries = [
+    'Mi experiencia incluye resolución de incidencias de producción y documentación de cambios en GitHub.',
+    'Documenté cambios en GitHub y resolví incidencias de producción.',
+  ];
+  const aiGenerate = async ({ messages }) => {
+    calls.push(messages[1].content);
+    return JSON.stringify(emptyGeneratedCv({ professional_summary: summaries[calls.length - 1] }));
+  };
+  const request = { db, profileId, userId: profileId, persist: false, aiGenerate };
+  const first = await generateCv(request);
+  const previousCv = { summary: first.cvData.professional_summary, bullets: first.cvData.work_experience[0].bullets };
+  const { previous_cv } = cvGenerateSchema.parse({ profileId, previous_cv: previousCv });
+  const second = await generateCv({ ...request, previous_cv });
+
+  assert.equal(calls.length, 2);
+  assert.doesNotMatch(calls[0], /VERSIÓN ANTERIOR/);
+  const [source, previous] = calls[1].split('VERSIÓN ANTERIOR');
+  assert.ok(source.includes(fact));
+  assert.ok(!source.includes(previousCv.summary));
+  assert.ok(previous.includes(previousCv.summary));
+  assert.equal(first.cvData.professional_summary, summaries[0]);
+  assert.equal(second.cvData.professional_summary, summaries[1]);
+  assert.deepEqual(second.cvData.work_experience[0].source_evidence, [fact]);
+  assert.equal(db.savedPayloads.length, 0);
+});
+
+test('un cambio de sector conserva el cargo real y recupera responsabilidades que la IA omitió', () => {
+  const facts = [
+    'Gestioné pases a producción y tracé cambios en GitHub.',
+    'Automaticé integración continua con GitHub Actions.',
+    'Desplegué servicios backend con AWS y contenedores.',
+    'Resolví incidentes y seguí servicios productivos.',
+    'Implementé pruebas automatizadas con Karate.',
+  ];
+  const record = { id: 'exp-1', company: 'Empresa Prueba', role: 'Backend Developer', description: facts.map((fact) => `- ${fact}`).join('\n') };
+  const source = {
+    personal_info: { target_role: 'Sin Experiencia / Atención al Cliente / Turno Tarde / Full o Part Time / Planilla / GANA +1500', bio: '' },
+    skills: { technical: [], soft: [] },
+    work_experience: [record],
+  };
+  const generated = emptyGeneratedCv({
+    professional_summary: 'Especialista en atención al cliente con 5 años de experiencia.',
+    work_experience: [{
+      source_id: record.id, company: record.company, role: record.role, start_date: '', end_date: '',
+      relevance: 'low', bullets: [facts[3], 'Atendí a clientes por teléfono.'],
+    }],
+  });
+  const result = parseAndReconcileGeneratedCv(generated, {}, source, 'Atención al cliente y seguimiento de solicitudes');
+  assert.equal(result.headline, 'Objetivo: Atención al Cliente');
+  assert.match(result.professional_summary, /resolución de incidencias y seguimiento de servicios en producción/);
+  assert.match(result.professional_summary, /Busco aplicar esa experiencia en un puesto de Atención al Cliente/);
+  assert.doesNotMatch(result.professional_summary, /Backend Developer|atendí a clientes|5 años/i);
+  assert.equal(result.work_experience[0].role, 'Backend Developer');
+  assert.deepEqual(result.work_experience[0].bullets, [facts[3], ...facts.filter((_, index) => index !== 3)]);
+  assert.deepEqual(result.work_experience[0].source_evidence, facts);
+  assert.deepEqual(result.technical_skills.cloud, ['AWS']);
+  assert.deepEqual(result.technical_skills.devops, ['GitHub Actions', 'GitHub']);
+  assert.deepEqual(result.technical_skills.testing, ['Karate']);
+  assert.deepEqual(result.soft_skills, ['Resolución de problemas', 'Seguimiento operativo']);
+
+  const repeated = { ...generated, professional_summary: 'Mi trayectoria incluye seguimiento operativo.' };
+  const regenerated = parseAndReconcileGeneratedCv(repeated, {}, source, 'Atención al cliente y seguimiento de solicitudes', new Set(), result.professional_summary);
+  assert.notEqual(regenerated.professional_summary, result.professional_summary);
+  assert.match(regenerated.professional_summary, /seguimiento de servicios en producción y resolución de incidencias/);
+  assert.deepEqual(regenerated.work_experience, result.work_experience);
+  const third = parseAndReconcileGeneratedCv(repeated, {}, source, 'Atención al cliente y seguimiento de solicitudes', new Set(), regenerated.professional_summary);
+  assert.equal(new Set([result.professional_summary, regenerated.professional_summary, third.professional_summary]).size, 3);
+});
+
+test('generateCv: JSON inválido no guarda una plantilla como éxito IA y conserva la vacante en el prompt', async () => {
   const profile = {
     id: 'profile-1', first_name: 'Ada', career: 'Ingeniería', target_role: 'Backend Developer',
     target_job_description: 'Vacante del perfil: Node.js', bio: 'Desarrolladora backend.',
@@ -313,7 +432,7 @@ test('generateCv: JSON inválido activa fallback, usa vacante del perfil y persi
   };
   const db = createCvDb({ profile });
   let aiParams;
-  const result = await generateCv({
+  await assert.rejects(generateCv({
     db,
     userId: 'profile-1',
     profileId: 'profile-1',
@@ -321,14 +440,11 @@ test('generateCv: JSON inválido activa fallback, usa vacante del perfil y persi
       aiParams = params;
       return '{json inválido';
     },
-  });
-
-  assert.equal(result.cvId, 'cv-1');
-  assert.equal(persistedCvSchema.safeParse(result.cvData).success, true);
+  }), { code: 'DOCUMENT_AI_UNAVAILABLE' });
+  assert.equal(db.savedPayloads.length, 0);
   assert.match(aiParams.messages[1].content, /Vacante del perfil: Node\.js/);
   assert.equal(aiParams.maxTokens, 4000);
   assert.equal(aiParams.responseSchema, generatedCvJsonSchema);
-  assert.deepEqual(db.savedPayloads[0].cv_data, result.cvData);
 });
 
 test('generateCv: la vacante opcional del request prevalece sobre la guardada', async () => {
@@ -402,6 +518,35 @@ test('generateCv conserva contacto temporal, vacante vacía y contexto en el doc
   assert.equal(result.cvData.cv_focus, 'técnico');
   profile.first_name = 'Perfil modificado después';
   assert.equal(db.savedPayloads[0].cv_data.personal_info.first_name, 'Ada');
+});
+
+test('la vista previa del CV no crea un registro hasta guardar o descargar', async () => {
+  const profileId = 'profile-1';
+  const db = createCvDb({ profile: { id: profileId, first_name: 'Ada', target_role: 'Backend', bio: 'Experiencia en desarrollo backend.' } });
+  const request = cvGenerateSchema.parse({ profileId, persist: false });
+  const summary = 'Experiencia en desarrollo backend.';
+  const { cvId, cvData } = await generateCv({
+    db, userId: profileId, ...request,
+    aiGenerate: async () => JSON.stringify(emptyGeneratedCv({ professional_summary: summary })),
+  });
+  assert.equal(cvId, null);
+  assert.equal(cvData.professional_summary, summary);
+  assert.equal(db.savedPayloads.length, 0);
+
+  for (const status of ['draft', 'downloaded']) {
+    const cvStyle = { template: 'classic' };
+    const editedCv = { ...cvData, professional_summary: 'Resumen revisado' };
+    const parsed = cvSaveSchema.parse({ status, cv_data: editedCv, cv_style: cvStyle });
+    const saved = await saveCv({ db, profileId, status: parsed.status, cvData: parsed.cv_data, cvStyle: parsed.cv_style });
+    assert.equal(saved.id, 'cv-1');
+    assert.deepEqual(db.savedPayloads.at(-1), {
+      profile_id: profileId,
+      document_title: 'CV Ada - Backend',
+      status,
+      cv_data: editedCv,
+      cv_style: cvStyle,
+    });
+  }
 });
 
 test('OpenAIProvider: usa json_schema estricto en modelos compatibles', async () => {

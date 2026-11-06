@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 5000;
 // CORS_ORIGINS (lista separada por comas); si no está, se usan los locales.
 const allowedOrigins = (process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
-  : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:3001']);
+  : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:3001']);
 app.use(cors({
   origin: function (origin, callback) {
     // Permitir solicitudes sin origen (como apps móviles o curl)

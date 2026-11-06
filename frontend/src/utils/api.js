@@ -60,6 +60,7 @@ export async function apiRequest(endpoint, method = 'POST', body = null, timeout
     if (!response.ok) {
       const err = new Error(data.error || data.message || 'Error en la petición de red.');
       err.code = data.code; // Preserva el código de error (ej. BYOK_MIGRATION_MISSING)
+      err.details = data.details;
       throw err;
     }
 

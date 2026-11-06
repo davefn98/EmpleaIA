@@ -1,4 +1,5 @@
 import React from 'react';
+import { hasCvEducation, hasCvExperience, hasCvText, toCvTextList as toTextList } from '../../utils/cvContent';
 import {
   CV_FONTS,
   CV_COLORS,
@@ -24,17 +25,6 @@ const CATEGORY_LABELS = {
   security: 'Seguridad',
   frontend: 'Frontend',
   other: 'Otras tecnologías'
-};
-
-const toTextList = (value) => {
-  if (!value) return [];
-  const values = Array.isArray(value) ? value : [value];
-  return values
-    .map((item) => typeof item === 'string'
-      ? item
-      : item?.name || item?.label || item?.skill || item?.text || '')
-    .map((item) => item.trim())
-    .filter(Boolean);
 };
 
 const normalizeSkillCategories = (rawSkills, categoryOrder = []) => {
@@ -101,11 +91,12 @@ export const normalizeCvData = (profile = {}, cvData = {}) => {
 
   const rawExperience = cvData.work_experience || cvData.experience || profile.work_experience || [];
   const rawEducation = cvData.academic_background || cvData.education || profile.academic_background || profile.education || [];
+  const professionalSummary = cvData.professional_summary ?? (cvData.profile_summary || cvData.summary || profile.bio || '');
 
   return {
-    headline: cvData.headline || cvData.professional_headline || cvData.target_role || profile.target_role || profile.career || '',
-    professionalSummary: cvData.professional_summary || cvData.profile_summary || cvData.summary || profile.bio || '',
-    workExperience: (Array.isArray(rawExperience) ? rawExperience : []).filter(Boolean).map((experience) => ({
+    headline: cvData.headline ?? (cvData.professional_headline || cvData.target_role || profile.target_role || profile.career || ''),
+    professionalSummary: hasCvText(professionalSummary) ? professionalSummary : '',
+    workExperience: (Array.isArray(rawExperience) ? rawExperience : []).filter((record) => hasCvExperience(record) && !record.hidden_from_cv).map((experience) => ({
       ...experience,
       period: experience.period || (experience.start_date
         ? `${experience.start_date} - ${experience.end_date || 'Actual'}`
@@ -113,7 +104,7 @@ export const normalizeCvData = (profile = {}, cvData = {}) => {
       description: experience.impact_description || experience.description || '',
       bullets: toTextList(experience.bullets || experience.achievements)
     })),
-    education: (Array.isArray(rawEducation) ? rawEducation : []).filter(Boolean).map((education) => ({
+    education: (Array.isArray(rawEducation) ? rawEducation : []).filter((record) => hasCvEducation(record) && !record.hidden_from_cv).map((education) => ({
         ...education,
         period: education.period || (education.start_date
           ? `${education.start_date} - ${education.end_date || 'Actual'}`
@@ -184,6 +175,8 @@ export default function CVPreview({
   const techSkillsArr = normalizedCv.technicalSkills;
   const softSkillsArr = normalizedCv.softSkills;
   const certifications = normalizedCv.certifications;
+  activeSections.skillsTech = activeSections.skillsTech && (techSkillsArr.length > 0 || certifications.length > 0);
+  activeSections.skillsSoft = activeSections.skillsSoft && softSkillsArr.length > 0;
   const linkedin   = profile.linkedin || profile.linkedIn || profile.linkedin_url || profile.linkedInUrl || '';
   const portfolio  = profile.portfolio || '';
 

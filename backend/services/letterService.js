@@ -1,7 +1,7 @@
 /**
  * letterService.js — Lógica de negocio del módulo de cartas de presentación.
  *
- * Orquesta la generación de IA, el fallback honesto y las operaciones CRUD
+ * Orquesta la generación de IA y las operaciones CRUD
  * delegando la persistencia a letterRepository.
  *
  * Este módulo no conoce req/res ni códigos HTTP: recibe datos, devuelve datos
@@ -35,7 +35,7 @@ function buildJobOfferText({ jobOfferText, company, targetRole, jobDescription, 
  * Construye el resumen del candidato para el prompt de IA usando EXCLUSIVAMENTE
  * datos reales del perfil. No se inventa ni interpola ningún dato ausente.
  */
-function buildUserSummary(profile, academic, work) {
+export function buildUserSummary(profile, academic, work) {
   return [
     `Nombre: ${profile.first_name} ${profile.last_name}`,
     `Carrera: ${profile.career}`,
@@ -43,8 +43,9 @@ function buildUserSummary(profile, academic, work) {
     `Biografía: ${profile.bio || 'No especificada'}`,
     `Habilidades Técnicas: ${(profile.technical_skills || []).join(', ')}`,
     `Habilidades Blandas: ${(profile.soft_skills || []).join(', ')}`,
-    `Educación: ${academic.map((a) => `${a.degree} en ${a.institution}`).join('; ')}`,
-    `Experiencia: ${work.map((w) => `${w.role} en ${w.company}`).join('; ')}`,
+    `Educación: ${JSON.stringify(academic.map(({ degree, institution, start_date, end_date, description }) => ({ degree, institution, start_date, end_date, description })))}`,
+    `Experiencia: ${JSON.stringify(work.map(({ role, company, start_date, end_date, description, achievements }) => ({ role, company, start_date, end_date, description, achievements })))}`,
+    `Certificaciones: ${JSON.stringify(profile.certifications || [])}`,
   ].join('\n');
 }
 
@@ -63,6 +64,7 @@ function buildFallbackLetter(profile, { company, targetRole }) {
   const careerName  = profile.career || '';
   const roleName    = targetRole || profile.target_role || '';
   const companyName = company || '';
+  const contactEmail = profile.contact_email ?? profile.email;
   const techSkills  =
     profile.technical_skills && profile.technical_skills.length > 0
       ? profile.technical_skills.join(', ')
@@ -80,7 +82,7 @@ function buildFallbackLetter(profile, { company, targetRole }) {
     'Atentamente,',
     '',
     fullName,
-    ...(profile.email ? [profile.email] : []),
+    ...(contactEmail ? [contactEmail] : []),
   ];
 
   return lines.join('\n');
@@ -141,6 +143,7 @@ export async function generateLetter({
   tone,
   document_title,
   status,
+  aiGenerate = generateWithFallback,
 }) {
   // 1. Obtener perfil
   const { data: profile, error: profileError } = await letterRepo.getProfile(db, profileId);
@@ -165,10 +168,10 @@ export async function generateLetter({
   // 4. Construir resumen del candidato (solo datos reales)
   const userSummary = buildUserSummary(profile, academic, work);
 
-  // 5. Invocar a la IA; fallback honesto si la IA no está disponible
+  // 5. Solo una salida real de IA puede presentarse como generación con IA.
   let letterContent;
   try {
-    letterContent = await generateWithFallback({
+    letterContent = await aiGenerate({
       useCase: 'cover_letter',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_LETTER },
@@ -181,14 +184,14 @@ export async function generateLetter({
       ],
       db,
       userId,
-      maxTokens: 700,
+      maxTokens: 1200,
     });
+    if (typeof letterContent !== 'string' || !letterContent.trim()) {
+      throw new Error('Empty AI response');
+    }
   } catch (apiError) {
-    console.warn(
-      '[letterService] Error en generación de carta por IA. Usando plantilla honesta con datos reales del perfil. Detalle:',
-      apiError.message
-    );
-    letterContent = buildFallbackLetter(profile, { company, targetRole });
+    console.warn('[letterService] Falló la generación IA:', { code: apiError.code || 'AI_UNAVAILABLE' });
+    throw appError('No se pudo generar la carta con IA. Tu texto anterior se conserva; vuelve a intentarlo.', 502, 'DOCUMENT_AI_UNAVAILABLE');
   }
 
   // 6. Persistir la carta generada

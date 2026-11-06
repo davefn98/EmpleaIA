@@ -12,6 +12,7 @@ const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 let vite;
 let CVPreview;
 let normalizeCvData;
+let CvContentEditor;
 
 before(async () => {
   vite = await createServer({
@@ -23,6 +24,7 @@ before(async () => {
     server: { middlewareMode: true }
   });
   ({ default: CVPreview, normalizeCvData } = await vite.ssrLoadModule('/src/components/cv/CVPreview.jsx'));
+  ({ default: CvContentEditor } = await vite.ssrLoadModule('/src/components/cv/CvContentEditor.jsx'));
 });
 
 after(async () => {
@@ -77,6 +79,60 @@ test('normalizeCvData respeta una selección técnica explícitamente vacía', (
     }
   });
   assert.deepEqual(result.technicalSkills, []);
+});
+
+test('una versión editada muestra el puesto y la habilidad agregados y oculta los registros excluidos', () => {
+  const cvData = {
+    personal_info: { first_name: 'Ada' },
+    professional_summary: '',
+    profile_summary: 'Resumen reemplazado',
+    work_experience: [
+      { role: 'Puesto original', hidden_from_cv: true },
+      { role: 'Puesto agregado', bullets: ['Responsabilidad agregada'] }
+    ],
+    academic_background: [{ degree: 'Estudio oculto', hidden_from_cv: true }],
+    technical_skills: [{ key: 'backend', label: 'Backend', skills: ['Node.js', 'API REST'] }]
+  };
+  const html = renderToStaticMarkup(React.createElement(CVPreview, { cvData, theme: { template: 'executive' } }));
+  assert.match(html, /Puesto agregado/);
+  assert.match(html, /Responsabilidad agregada/);
+  assert.match(html, /API REST/);
+  assert.doesNotMatch(html, /Puesto original|Resumen reemplazado|Estudio oculto/);
+  assert.equal(cvData.work_experience.length, 2);
+});
+
+test('la vista previa omite los estudios y puestos nuevos hasta que tengan contenido', () => {
+  const pending = { id: 'nuevo', hidden_from_cv: false, start_date: '2025-02-03' };
+  const existing = { degree: 'Ingeniería', institution: 'Instituto', start_date: '2024-05' };
+  const cvData = {
+    academic_background: [existing, { ...pending, degree: '   ' }],
+    work_experience: [pending],
+  };
+  const preview = normalizeCvData({}, cvData);
+  assert.deepEqual(preview.education.map(({ degree }) => degree), ['Ingeniería']);
+  assert.equal(preview.education[0].period, '2024-05 - Actual');
+  assert.deepEqual(preview.workExperience, []);
+  const updatedPreview = normalizeCvData({}, {
+    ...cvData,
+    academic_background: [existing, { ...pending, institution: 'Nueva institución' }],
+    work_experience: [{ ...pending, company: 'Nueva empresa' }],
+  });
+  assert.equal(updatedPreview.education.length, 2);
+  assert.equal(updatedPreview.workExperience.length, 1);
+});
+
+test('el editor distingue un resumen vacío de uno oculto', () => {
+  const renderEditor = (summary) => renderToStaticMarkup(React.createElement(CvContentEditor, {
+    document: { personal_info: {}, professional_summary: summary },
+    visibleSections: { professionalSummary: false },
+  }));
+  const empty = renderEditor('   ');
+  assert.match(empty, /Escribe un resumen para verlo en el CV/);
+  assert.doesNotMatch(empty, /Mostrar el resumen|type="checkbox"/);
+  const hidden = renderEditor('Resumen de prueba');
+  assert.match(hidden, /Oculto en el CV/);
+  assert.match(hidden, /Mostrar el resumen/);
+  assert.equal(normalizeCvData({}, { professional_summary: '   ' }).professionalSummary, '');
 });
 
 test('la vista de un borrador usa el contacto guardado y respeta sus secciones', () => {

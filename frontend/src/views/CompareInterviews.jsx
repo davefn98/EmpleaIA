@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { apiRequest } from '../utils/api';
+import { interviewScoreChange } from '../utils/interviewComparison';
 import { Loader2, TrendingUp, ChevronLeft, CheckCircle2, MessageSquare, Award, AlertCircle } from 'lucide-react';
 
 const TYPE_LABEL = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
@@ -11,6 +12,10 @@ export default function CompareInterviews({ setActiveView }) {
   const [interviews, setInterviews] = useState([]);
   const [selected, setSelected] = useState([]);
   const [error, setError] = useState('');
+  const [comparison, setComparison] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const requestVersion = useRef(0);
+  useEffect(() => () => { requestVersion.current += 1; }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -29,6 +34,9 @@ export default function CompareInterviews({ setActiveView }) {
   }, []);
 
   const toggle = (id) => {
+    if (generating) return;
+    requestVersion.current += 1;
+    setComparison(null);
     setSelected(prev => {
       if (prev.includes(id)) return prev.filter(x => x !== id);
       if (prev.length >= 3) return prev; // máximo 3 a la vez
@@ -37,6 +45,21 @@ export default function CompareInterviews({ setActiveView }) {
   };
 
   const chosen = interviews.filter(i => selected.includes(i.id));
+  const scoreChange = interviewScoreChange(chosen);
+  const generateComparison = async () => {
+    if (generating || chosen.length < 2 || scoreChange === null) return;
+    const version = ++requestVersion.current;
+    setGenerating(true);
+    setError('');
+    try {
+      const data = await apiRequest('/interview/compare', 'POST', { interviewIds: chosen.map((item) => item.id) });
+      if (version === requestVersion.current) setComparison(data.comparison);
+    } catch (err) {
+      if (version === requestVersion.current) setError(err.message || 'No se pudo generar la comparación. Puedes reintentar.');
+    } finally {
+      if (version === requestVersion.current) setGenerating(false);
+    }
+  };
   const fmtDate = (d) => d
     ? new Date(d).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' })
     : '—';
@@ -88,6 +111,7 @@ export default function CompareInterviews({ setActiveView }) {
                 return (
                   <button
                     key={iv.id}
+                    disabled={generating}
                     onClick={() => toggle(iv.id)}
                     className={`text-left p-4 rounded-xl border transition-all cursor-pointer ${
                       isSel ? 'border-indigo-600 bg-indigo-50/40 ring-1 ring-indigo-600' : 'border-slate-200 bg-white hover:border-slate-300'
@@ -163,6 +187,21 @@ export default function CompareInterviews({ setActiveView }) {
               </div>
             ) : (
               <div className="text-center text-xs text-slate-400 py-6">Selecciona al menos 2 entrevistas para ver la comparación.</div>
+            )}
+            {chosen.length >= 2 && (
+              <section className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+                <p className="text-sm font-bold text-slate-800">Diferencia de puntuación: {scoreChange === null ? 'No disponible' : `${scoreChange > 0 ? '+' : ''}${scoreChange} puntos`}</p>
+                <p className="text-xs text-slate-500">Más reciente menos más antigua. Diferencias de puesto, tipo o dificultad pueden limitar la comparación; esta variación no demuestra una mejora de empleabilidad.</p>
+                <button type="button" onClick={generateComparison} disabled={generating || scoreChange === null} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-50 cursor-pointer">
+                  {generating ? 'Analizando entrevistas…' : 'Generar recomendaciones con IA'}
+                </button>
+                {comparison && <div className="space-y-3">
+                  <p className="text-sm text-slate-700 whitespace-pre-wrap">{comparison.analysis}</p>
+                  {comparison.recommendations.map((item, index) => <article key={index} className="border-t border-slate-100 pt-3 text-sm text-slate-700">
+                    <p className="font-bold">{item.finding}</p><p>{item.action}</p><p className="text-xs text-slate-500 mt-1">{item.reason}</p>
+                  </article>)}
+                </div>}
+              </section>
             )}
           </>
         )}

@@ -3,16 +3,17 @@ import { openai } from '../lib/openaiClient.js';
 import {
   SYSTEM_PROMPT_INTERVIEW_START,
   SYSTEM_PROMPT_INTERVIEW_EVAL,
-  SYSTEM_PROMPT_INTERVIEW_FINAL,
   SYSTEM_PROMPT_INTERVIEW_RESOURCES
 } from '../lib/prompts.js';
 import multer from 'multer';
 import { requireAuth } from '../lib/authMiddleware.js';
 import { generateWithFallbackDetailed } from '../lib/AIProviderService.js';
 import { closeInterviewSession } from '../lib/closeInterviewSession.js';
+import { generateInterviewAnalysis } from '../services/interviewAnalysisService.js';
+import { compareInterviewSessions, comparisonRequestSchema } from '../services/interviewComparisonService.js';
 import {
-  getHasApiKey, resolveTokens, classifyOpenAIError, TRANSCRIBE_ERROR_RESPONSES,
-  audioExtensionFromMime, buildProfileSummary, buildPriorEvalSummary, buildQAPairs, MAX_INTERVIEW_CONTEXT_CHARS, averageInterviewScore, sanitizeContentFeedback, buildFinalInterviewPrompt, getSessionTokenBudget, resolveInterviewResponseMode, withInterviewResponseMode, groundInterviewGuideMetrics, isExplicitInterviewNonAnswer
+  getHasApiKey, resolveTokens, classifyOpenAIError, TRANSCRIBE_ERROR_RESPONSES, buildDifficultyInstruction,
+  audioExtensionFromMime, buildProfileSummary, buildPriorEvalSummary, buildQAPairs, MAX_INTERVIEW_CONTEXT_CHARS, averageInterviewScore, sanitizeContentFeedback, getSessionTokenBudget, resolveInterviewResponseMode, withInterviewResponseMode, groundInterviewGuideMetrics, isExplicitInterviewNonAnswer
 } from '../services/interviewService.js';
 import fs from 'fs';
 import path from 'path';
@@ -22,6 +23,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const router = Router();
+
+router.post('/interview/compare', requireAuth, async (req, res) => {
+  const parsed = comparisonRequestSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', error: 'Selecciona entre dos y tres entrevistas distintas.' });
+  try {
+    const comparison = await compareInterviewSessions({ db: req.db, userId: req.user.id,
+      interviewIds: parsed.data.interviewIds, generate: generateWithFallbackDetailed });
+    return res.json({ success: true, comparison });
+  } catch (error) {
+    console.warn('[interview/compare]', { code: error.code || 'AI_UNAVAILABLE' });
+    return res.status(error.status || 502).json({ success: false, code: error.code || 'COMPARISON_AI_UNAVAILABLE', error: error.message || 'No se pudo generar la comparación. Tus entrevistas se conservan.' });
+  }
+});
 
 // ─── Configuración IA y presupuesto de tokens ──────────────────────────────
 const MODEL         = 'gpt-4o-mini';
@@ -170,14 +184,9 @@ router.post('/interview/transcribe', requireAuth, handleAudioUpload, async (req,
 });
 
 const generateSessionAnalysis = async (req, interview, pairs) => {
-  const prompt = buildFinalInterviewPrompt(interview, pairs);
-  const { content, usage, provider, model } = await generateWithFallbackDetailed({
-    useCase: 'interview_feedback', messages: [{role:'system',content:SYSTEM_PROMPT_INTERVIEW_FINAL},{role:'user',content:prompt}],
-    db:req.db,userId:req.user.id,jsonMode:true,maxTokens:MAX_OUT_FINAL
+  return generateInterviewAnalysis({
+    req, interview, pairs, generate: generateWithFallbackDetailed, maxTokens: MAX_OUT_FINAL,
   });
-  const result = sanitizeContentFeedback(JSON.parse(content));
-  if (!result || typeof result.general_analysis !== 'string' || !Number.isFinite(result.overall_score) || result.overall_score < 0 || result.overall_score > 100 || !Array.isArray(result.recommendations) || result.recommendations.length < 3) throw new Error('La IA devolvió un análisis final inválido.');
-  return { result:{...result,ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'}, tokens:resolveTokens(usage,prompt+content) };
 };
 const persistSessionAnalysis = async (db,pairs,result) => {
   const last = pairs.at(-1);
@@ -317,6 +326,7 @@ router.post('/interview/start', requireAuth, async (req, res) => {
   const startPrompt = `Perfil resumido: ${profileSummary}
 Tipo de entrevista: ${interviewType}
 Nivel de dificultad: ${difficultyLevel}
+Pauta del nivel: ${buildDifficultyInstruction(difficultyLevel)}
 Preguntas recientes (NO repetir): ${pastQuestions.length ? pastQuestions.slice(0, 8).map((q, i) => `${i + 1}. ${q}`).join(' | ') : 'Ninguna.'}
 
 Formula la primera pregunta de apertura de la entrevista para el nivel de dificultad seleccionado.`;
@@ -501,6 +511,7 @@ Repregunta disponible: ${canFollowUp
   const evalPrompt = `Perfil resumido: ${profileSummary}
 Tipo de entrevista: ${interviewType}
 Nivel de dificultad: ${difficultyLevel}
+Pauta del nivel: ${buildDifficultyInstruction(difficultyLevel)}
 ${responseTimedOut ? 'El sistema registra tiempo agotado sin respuesta. No es contenido del candidato ni demuestra falta de conocimientos; describe ausencia de respuesta, puntúa este turno con 0 y continúa sin repreguntar.' : ''}
 Formula una sola pregunta breve (máximo 45 palabras), sin repetir los temas ya abordados.
 Preguntas principales ya formuladas en esta sesión (no repetir ni reformular el mismo tema): ${JSON.stringify(priorMainQuestions)}
@@ -728,28 +739,14 @@ router.post('/interview/generate-pending-feedback', requireAuth, async (req, res
     return res.status(400).json({ error: 'No hay respuestas guardadas para generar feedback.' });
   }
 
-  const finalPrompt = buildFinalInterviewPrompt(interview,pairs);
-
   let finalJson = null;
   let newTokens = 0;
 
   try {
-    const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
-      useCase: 'interview_feedback',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_FINAL },
-        { role: 'user',   content: finalPrompt }
-      ],
-      db: supabaseClient,
-      userId: req.user.id,
-      jsonMode: true,
-      maxTokens: MAX_OUT_FINAL
-    });
-
-    finalJson = {...sanitizeContentFeedback(JSON.parse(raw)),ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'};
-    if(!finalJson?.general_analysis || !Number.isFinite(finalJson.overall_score) || !Array.isArray(finalJson.recommendations) || finalJson.recommendations.length < 3) throw new Error('Análisis de IA inválido.');
-    await persistSessionAnalysis(supabaseClient,pairs,finalJson);
-    newTokens = resolveTokens(usage, finalPrompt + raw);
+    const analysis = await generateSessionAnalysis(req, interview, pairs);
+    finalJson = analysis.result;
+    await persistSessionAnalysis(supabaseClient, pairs, finalJson);
+    newTokens = analysis.tokens;
 
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
@@ -780,6 +777,7 @@ router.post('/interview/generate-pending-feedback', requireAuth, async (req, res
   return res.json({
     success:         true,
     completedEarly: pairs.length < (interview.total_questions || MAX_QUESTIONS),
+    difficultyLevel: interview.difficulty_level || 'intermediate',
     overallScore:    averageInterviewScore(pairs),
     aiOverallScore: finalJson.overall_score,
     generalAnalysis: finalJson.general_analysis,
@@ -980,28 +978,14 @@ router.post('/interview/finish', requireAuth, async (req, res) => {
     });
   }
 
-  const finalPrompt = buildFinalInterviewPrompt(interview,pairs);
-
   let finalJson = null;
   let newTokens = 0;
 
   try {
-    const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
-      useCase: 'interview_feedback',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_FINAL },
-        { role: 'user',   content: finalPrompt }
-      ],
-      db: supabaseClient,
-      userId: req.user.id,
-      jsonMode: true,
-      maxTokens: MAX_OUT_FINAL
-    });
-
-    finalJson = {...sanitizeContentFeedback(JSON.parse(raw)),ai_provider:provider || null,ai_model:model || null,prompt_version:'pi2-interview-v3-grounded'};
-    if(!finalJson?.general_analysis || !Number.isFinite(finalJson.overall_score) || !Array.isArray(finalJson.recommendations) || finalJson.recommendations.length < 3) throw new Error('Análisis de IA inválido.');
-    await persistSessionAnalysis(supabaseClient,pairs,finalJson);
-    newTokens = resolveTokens(usage, finalPrompt + raw);
+    const analysis = await generateSessionAnalysis(req, interview, pairs);
+    finalJson = analysis.result;
+    await persistSessionAnalysis(supabaseClient, pairs, finalJson);
+    newTokens = analysis.tokens;
   } catch (apiErr) {
     const classified = classifyOpenAIError(apiErr);
     console.error('[/interview/finish] Error IA:', classified.type, apiErr.message);
@@ -1049,6 +1033,7 @@ router.post('/interview/finish', requireAuth, async (req, res) => {
   return res.json({
     success:         true,
     completedEarly:  true,
+    difficultyLevel: interview.difficulty_level || 'intermediate',
     overallScore:    averageInterviewScore(pairs),
     aiOverallScore: finalJson.overall_score,
     generalAnalysis: finalJson.general_analysis,

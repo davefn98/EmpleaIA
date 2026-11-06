@@ -20,6 +20,7 @@ import { extractCvText } from '../lib/fileTextExtractor.js';
 import {
   cvGenerateSchema,
   cvParseSchema,
+  cvSaveSchema,
   cvUpdateSchema,
 } from '../validators/cvValidator.js';
 import * as cvService from '../services/cvService.js';
@@ -66,7 +67,7 @@ const handleUploadErrors = (middleware) => (req, res, next) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/cv-generate
-// Genera un CV con IA (o fallback honesto) y lo persiste.
+// Genera un CV con IA. El generador puede pedir una vista previa sin persistirla.
 // El rate limit para este endpoint se aplica en server.js (aiLimiter).
 // ---------------------------------------------------------------------------
 router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
@@ -82,6 +83,7 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
 
   const { 
     profileId, 
+    persist,
     document_title, 
     status, 
     cv_style,
@@ -90,6 +92,7 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
     excluded_experience_ids,
     excluded_skills,
     candidate_data,
+    previous_cv,
     target_job_description,
   } = parsed.data;
 
@@ -103,6 +106,7 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
       db:     req.db,
       userId: req.user.id,
       profileId,
+      persist,
       document_title,
       status,
       cv_style,
@@ -111,6 +115,7 @@ router.post('/cv-generate', requireAuth, asyncHandler(async (req, res) => {
       excluded_experience_ids,
       excluded_skills,
       candidate_data,
+      previous_cv,
       target_job_description,
     });
   } catch (err) {
@@ -199,6 +204,28 @@ router.delete('/cv/:id', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------------------
+// POST /api/cv
+// Guarda por primera vez el CV que el usuario revisó en la vista previa.
+// ---------------------------------------------------------------------------
+router.post('/cv', requireAuth, asyncHandler(async (req, res) => {
+  const parsed = cvSaveSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return fail(res, 'Datos de guardado inválidos.', 400, 'VALIDATION_ERROR');
+  }
+
+  const { status, document_title, cv_style, cv_data } = parsed.data;
+  const cv = await cvService.saveCv({
+    db: req.db,
+    profileId: req.user.id,
+    cvData: cv_data,
+    documentTitle: document_title,
+    status,
+    cvStyle: cv_style,
+  });
+  return ok(res, { cv }, 201);
+}));
+
+// ---------------------------------------------------------------------------
 // PUT /api/cv/:id
 // Actualiza campos editables de un CV existente.
 // ---------------------------------------------------------------------------
@@ -220,6 +247,9 @@ router.put('/cv/:id', requireAuth, asyncHandler(async (req, res) => {
       fields: { status, document_title, cv_style, cv_data },
     });
   } catch (err) {
+    if (err.code === 'DOCUMENT_AI_UNAVAILABLE') {
+      return fail(res, err.message, err.status || 502, err.code);
+    }
     if (err.status && err.status < 500) {
       return fail(res, err.message, err.status, err.code);
     }

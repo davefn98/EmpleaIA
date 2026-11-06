@@ -26,9 +26,9 @@ const IMPORT_ERROR_MESSAGES = {
 
 /**
  * Modal flotante para importar un CV con IA (PDF, DOCX, TXT o texto pegado).
- * Solo autocompleta el formulario del CV actual: nunca modifica el perfil.
+ * Autocompleta el formulario para revisión; la persistencia se confirma aparte.
  */
-export default function ImportCvModal({ open, onClose, onParsed }) {
+export default function ImportCvModal({ open, onClose, onParsed, destination = 'document' }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [pastedText, setPastedText] = useState('');
   const [parsing, setParsing] = useState(false);
@@ -138,7 +138,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
               Importar CV con IA
             </h3>
             <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-normal">
-              Sube tu CV en PDF, DOCX o TXT para que la IA extraiga tus datos profesionales y complete este formulario. Revisa lo extraído antes de aplicarlo. Solo llena este CV; tu perfil no se modifica.
+              Sube tu CV en PDF, DOCX o TXT para que la IA extraiga tus datos profesionales. {destination === 'profile' ? 'Revisa lo extraído; tu perfil cambiará solo cuando pulses Guardar perfil.' : 'Revisa lo extraído antes de aplicarlo. Solo llena este CV; tu perfil no se modifica.'}
             </p>
           </div>
           <button
@@ -215,7 +215,7 @@ export default function ImportCvModal({ open, onClose, onParsed }) {
                 ))}
                 <details className="text-xs"><summary className="cursor-pointer">Ver todos los datos extraídos</summary><pre className="whitespace-pre-wrap break-words mt-2">{JSON.stringify(preview, null, 2)}</pre></details>
               </div>
-              <p className="text-[11px]">Comprueba que estén todas las responsabilidades. El puesto y la vacante actuales se conservan.</p>
+              <p className="text-[11px]">Al aplicar la importación, los campos que el CV no incluye quedarán vacíos en el formulario. El puesto y la vacante actuales se conservan.</p>
             </div>
           )}
 

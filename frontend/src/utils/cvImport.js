@@ -8,6 +8,18 @@ export function completeImportedExperience(record) {
   return { ...record, description: [description, ...additional].filter(Boolean).join('\n'), achievements };
 }
 
+export function importedCvFields(parsed) {
+  const result = {};
+  for (const field of ['first_name', 'last_name', 'email', 'phone', 'location', 'linkedin', 'portfolio', 'career', 'bio']) {
+    result[field] = hasText(parsed[field]) ? parsed[field] : '';
+  }
+  for (const field of ['technical_skills', 'soft_skills', 'certifications', 'work_experience', 'academic_background']) {
+    result[field] = Array.isArray(parsed[field]) ? parsed[field] : [];
+  }
+  result.work_experience = result.work_experience.map(completeImportedExperience);
+  return result;
+}
+
 /** Imported blanks cannot erase a previous target, job description or contact. */
 export function mergeImportedPersonal(previous, parsed) {
   const next = { ...previous };

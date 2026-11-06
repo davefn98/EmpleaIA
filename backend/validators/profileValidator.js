@@ -95,6 +95,8 @@ const dateText = z.preprocess(
 export const profileUpdateSchema = z.object({
   first_name: requiredText.optional(), last_name: requiredText.optional(),
   email: z.string().trim().email().max(320).optional(), phone: optionalText,
+  linkedin: optionalText, portfolio: optionalText,
+  certifications: z.array(z.string().trim().min(1).max(300)).max(100).optional(),
   location: optionalText, career: requiredText.optional(), target_role: requiredText.optional(),
   target_job_description: targetJobDescription,
   bio: z.string().trim().max(5000).optional().nullable(),
@@ -113,7 +115,11 @@ const workSchema = z.object({
 }).strict();
 
 export const fullProfileUpdateSchema = z.object({
-  profile: profileUpdateSchema,
+  profile: profileUpdateSchema.extend({
+    contact_email: z.string().trim().email().max(320).or(z.literal('')).optional(),
+    career: requiredText.or(z.literal('')).optional(),
+    target_role: requiredText.or(z.literal('')).optional(),
+  }),
   academic_background: z.array(academicSchema).max(100),
   work_experience: z.array(workSchema).max(100),
 }).strict();

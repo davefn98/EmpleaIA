@@ -14,6 +14,7 @@ export default function ActivityHistory({ setActiveView }) {
   const [error, setError] = useState('');
   const [selectedItem, setSelectedItem] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [filterType, setFilterType] = useState('all');
 
   useEffect(() => {
     const load = async () => {
@@ -36,6 +37,7 @@ export default function ActivityHistory({ setActiveView }) {
           title: c.document_title || 'CV generado',
           date: c.created_at,
           cvData: c.cv_data,
+          documentId: c.id,
           cvStyle: c.cv_style,
         }));
 
@@ -109,13 +111,20 @@ export default function ActivityHistory({ setActiveView }) {
     : 'text-amber-600 bg-amber-50 border-amber-100 dark:text-amber-400 dark:bg-amber-950/40 dark:border-amber-900/40';
   const labelFor = (kind) => (kind === 'cv' ? 'CV' : kind === 'letter' ? 'Carta' : 'Entrevista');
 
-  const handleRestoreCv = (cvData) => {
-    localStorage.setItem('empleaia_historical_cv_data', JSON.stringify(cvData));
+  const handleRestoreCv = (cvData, documentId) => {
+    if (documentId) {
+      localStorage.setItem('empleaia_edit_cv_id', documentId);
+      localStorage.removeItem('empleaia_historical_cv_data');
+    } else {
+      localStorage.setItem('empleaia_historical_cv_data', JSON.stringify(cvData));
+    }
     setSelectedItem(null);
     if (setActiveView) {
       setActiveView('documents-cv');
     }
   };
+
+  const visibleItems = items.filter((item) => filterType === 'all' || item.kind === filterType);
 
   if (loading) {
     return (
@@ -135,6 +144,12 @@ export default function ActivityHistory({ setActiveView }) {
         <p className="text-xs text-slate-500 dark:text-slate-400">
           Todas tus acciones (CVs, cartas y entrevistas) ordenadas de la más reciente a la más antigua. Haz clic en cualquier elemento para inspeccionar sus detalles.
         </p>
+        <label className="flex items-center gap-3 text-sm text-slate-700 dark:text-slate-200">
+          Tipo de actividad
+          <select value={filterType} onChange={(event) => setFilterType(event.target.value)} className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2">
+            <option value="all">Todas</option><option value="cv">CV</option><option value="letter">Cartas</option><option value="interview">Entrevistas</option>
+          </select>
+        </label>
 
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-center gap-2 text-xs text-red-700 dark:bg-red-950/40 dark:border-red-900 dark:text-red-400">
@@ -149,13 +164,13 @@ export default function ActivityHistory({ setActiveView }) {
         )}
 
         {/* Con error de carga no se muestra el estado vacío: son cosas distintas */}
-        {error ? null : items.length === 0 ? (
+        {error ? null : visibleItems.length === 0 ? (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-            Aún no tienes actividad registrada. Genera un CV, una carta o realiza una entrevista para verlos aquí.
+            {items.length ? 'No hay actividades del tipo seleccionado.' : 'Aún no tienes actividad registrada. Genera un CV, una carta o realiza una entrevista para verlos aquí.'}
           </div>
         ) : (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl divide-y divide-slate-100 dark:divide-slate-800/60 overflow-hidden shadow-sm">
-            {items.map((ev, i) => {
+            {visibleItems.map((ev, i) => {
               const Icon = iconFor(ev.kind);
               return (
                 <div 
@@ -475,10 +490,10 @@ export default function ActivityHistory({ setActiveView }) {
             <div className="p-4 border-t border-slate-150 dark:border-slate-800 flex justify-end gap-3 bg-slate-50/60 dark:bg-slate-900/60 shrink-0">
               {selectedItem.kind === 'cv' && selectedItem.cvData && (
                 <button 
-                  onClick={() => handleRestoreCv(selectedItem.cvData)}
+                  onClick={() => handleRestoreCv(selectedItem.cvData, selectedItem.documentId)}
                   className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-600/10 cursor-pointer text-xs"
                 >
-                  Usar estos datos en Curriculum Vitae
+                  {selectedItem.documentId ? 'Editar este CV guardado' : 'Usar estos datos en Curriculum Vitae'}
                 </button>
               )}
 
