@@ -6,6 +6,7 @@ import {
   Settings,
   User,
   Clock,
+  ClipboardCheck,
 } from 'lucide-react';
 
 export const navigationGroups = [
@@ -29,7 +30,7 @@ export const navigationGroups = [
         name: 'Mi perfil',
         icon: User,
         path: '/profile/view',
-        match: (pathname) => pathname === '/profile/view' || pathname === '/profile/edit',
+        match: (pathname) => ['/profile/view', '/profile/edit', '/profile/import'].includes(pathname),
       },
     ],
   },
@@ -60,7 +61,7 @@ export const navigationGroups = [
     ],
   },
   {
-    title: 'Gestión',
+    title: 'Práctica y seguimiento',
     items: [
       {
         id: 'interviews',
@@ -75,6 +76,13 @@ export const navigationGroups = [
         icon: Clock,
         path: '/historial',
         match: (pathname) => pathname === '/historial' || pathname === '/history',
+      },
+      {
+        id: 'pi2-validation',
+        name: 'Validación PI2',
+        icon: ClipboardCheck,
+        path: '/validacion-pi2',
+        match: (pathname) => pathname === '/validacion-pi2',
       },
     ],
   },

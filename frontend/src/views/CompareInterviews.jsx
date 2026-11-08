@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../utils/supabaseClient';
 import { apiRequest } from '../utils/api';
-import { interviewScoreChange } from '../utils/interviewComparison';
-import { Loader2, TrendingUp, ChevronLeft, CheckCircle2, MessageSquare, Award, AlertCircle } from 'lucide-react';
+import { interviewScoreChange, orderInterviewsByDate } from '../utils/interviewComparison';
+import { Loader2, TrendingUp, ChevronLeft, CheckCircle2, Award, AlertCircle } from 'lucide-react';
 
 const TYPE_LABEL = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
 const DIFF_LABEL = { basic: 'Básico', intermediate: 'Intermedio', advanced: 'Avanzado' };
@@ -44,7 +44,7 @@ export default function CompareInterviews({ setActiveView }) {
     });
   };
 
-  const chosen = interviews.filter(i => selected.includes(i.id));
+  const chosen = orderInterviewsByDate(interviews.filter(i => selected.includes(i.id)));
   const scoreChange = interviewScoreChange(chosen);
   const generateComparison = async () => {
     if (generating || chosen.length < 2 || scoreChange === null) return;
@@ -158,21 +158,18 @@ export default function CompareInterviews({ setActiveView }) {
                         ))}
                       </tr>
                       <tr>
-                        <td className="px-4 py-3 text-xs font-semibold text-slate-500 flex items-center gap-1.5"><MessageSquare className="h-3.5 w-3.5 text-indigo-500" /> Fluidez promedio</td>
-                        {chosen.map(c => (
-                          <td key={c.id} className="px-4 py-3 text-sm font-bold text-slate-800">{c.avg_fluency ?? '—'}{c.avg_fluency != null ? '/100' : ''}</td>
-                        ))}
-                      </tr>
-                      <tr>
                         <td className="px-4 py-3 text-xs font-semibold text-slate-500">Dificultad</td>
                         {chosen.map(c => (
                           <td key={c.id} className="px-4 py-3 text-xs text-slate-700">{DIFF_LABEL[c.difficulty_level] || c.difficulty_level}</td>
                         ))}
                       </tr>
                       <tr>
-                        <td className="px-4 py-3 text-xs font-semibold text-slate-500">Preguntas respondidas</td>
+                        <td className="px-4 py-3 text-xs font-semibold text-slate-500">Preguntas principales respondidas</td>
                         {chosen.map(c => (
-                          <td key={c.id} className="px-4 py-3 text-xs text-slate-700">{c.answers_count} de {c.total_questions}</td>
+                          <td key={c.id} className="px-4 py-3 text-xs text-slate-700">
+                            {c.questions_answered == null ? '—' : c.questions_answered}
+                            {c.questions_answered != null && c.total_questions != null ? ` de ${c.total_questions}` : ''}
+                          </td>
                         ))}
                       </tr>
                       <tr>

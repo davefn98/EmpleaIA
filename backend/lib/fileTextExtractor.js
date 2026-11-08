@@ -7,7 +7,14 @@
  */
 
 import { createRequire } from 'module';
+import { copyFile, mkdtemp, rmdir, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import mammoth from 'mammoth';
+import { createWorker, PSM } from 'tesseract.js';
+import spanish from '@tesseract.js-data/spa';
+import english from '@tesseract.js-data/eng';
+import { normalizeOcrContrast } from './ocrContrast.js';
 
 const require = createRequire(import.meta.url);
 const pdfParseModule = require('pdf-parse');
@@ -18,6 +25,55 @@ const typedError = (message, status, code) => {
   err.code = code;
   return err;
 };
+
+const MAX_OCR_PAGES = 6;
+let activeOcrJobs = 0;
+const textLength = (text) => text.replace(/\s/g, '').length;
+
+async function readScannedPages(parser, pages) {
+  if (pages.length > MAX_OCR_PAGES) {
+    throw typedError('El PDF tiene más de seis páginas escaneadas. Divide el archivo e importa las partes por separado.', 422, 'PDF_OCR_PAGE_LIMIT');
+  }
+  if (activeOcrJobs >= 2) {
+    throw typedError('El lector de documentos está ocupado. Vuelve a intentar en unos segundos.', 503, 'PDF_OCR_BUSY');
+  }
+
+  activeOcrJobs++;
+  let worker;
+  let modelDirectory;
+  const languages = [spanish, english];
+  try {
+    const { pages: sizes } = await parser.getInfo({ parsePageInfo: true });
+    modelDirectory = await mkdtemp(join(tmpdir(), 'empleaia-ocr-models-'));
+    await Promise.all(languages.map(({ code, langPath }) => copyFile(
+      join(langPath, '..', '4.0.0_best_int', `${code}.traineddata.gz`), join(modelDirectory, `${code}.traineddata.gz`),
+    )));
+    worker = await createWorker(languages.map(({ code }) => code), 1, { langPath: modelDirectory, cacheMethod: 'none', errorHandler: () => {} });
+    await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+    const recognized = new Map();
+    for (const page of pages) {
+      const size = sizes.find(({ pageNumber }) => pageNumber === page.num);
+      if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height) || size.width <= 0 || size.height <= 0) {
+        throw new Error('Dimensiones de página inválidas');
+      }
+      const scale = Math.min(3.3, 2800 / Math.max(size.width, size.height));
+      const screenshot = await parser.getScreenshot({ partial: [page.num], scale, imageDataUrl: false });
+      const image = await normalizeOcrContrast(Buffer.from(screenshot.pages[0].data));
+      const { data: { text } } = await worker.recognize(image);
+      if (textLength(text) > textLength(page.text)) recognized.set(page.num, text);
+    }
+    return recognized;
+  } catch {
+    throw typedError('No se pudo leer la imagen del PDF. Sube una copia más nítida o pega el texto de tu CV.', 422, 'PDF_OCR_ERROR');
+  } finally {
+    await worker?.terminate().catch(() => {});
+    if (modelDirectory) {
+      await Promise.allSettled(languages.map(({ code }) => unlink(join(modelDirectory, `${code}.traineddata.gz`))));
+      await rmdir(modelDirectory).catch(() => {});
+    }
+    activeOcrJobs--;
+  }
+}
 
 async function parsePdfBuffer(buffer) {
   const legacyParser = typeof pdfParseModule === 'function'
@@ -38,11 +94,13 @@ async function parsePdfBuffer(buffer) {
     throw new Error('La librería pdf-parse no expone un parser compatible.');
   }
 
-  const parser = new pdfParseModule.PDFParse({ data: buffer });
+  const parser = new pdfParseModule.PDFParse({ data: buffer, isEvalSupported: false, maxImageSize: 20000000 });
   try {
     const pdfData = await parser.getText();
+    const scanned = pdfData.pages.filter((page) => textLength(page.text) <= 100);
+    const recognized = scanned.length ? await readScannedPages(parser, scanned) : new Map();
     return {
-      text: pdfData.text || '',
+      text: pdfData.pages.map((page) => recognized.get(page.num) || page.text).join('\n\n'),
       numPages: pdfData.total || pdfData.numpages || pdfData.pages?.length || 0
     };
   } finally {
@@ -73,6 +131,7 @@ export async function extractCvText({ buffer, mimetype, originalname }) {
       text = pdfData.text || '';
       numPages = pdfData.numPages || 0;
     } catch (pdfError) {
+      if (pdfError.status) throw pdfError;
       console.error('[fileTextExtractor] Error al parsear PDF:', pdfError.message || pdfError);
       const msg = pdfError.message || String(pdfError);
       if (/password|encrypted|decrypt|permission/i.test(msg)) {
@@ -118,7 +177,7 @@ export async function extractCvText({ buffer, mimetype, originalname }) {
   if (!cleanText || cleanText.length <= 100) {
     if (isPdf && numPages > 0) {
       throw typedError(
-        'El PDF parece ser un escaneo o imagen digitalizada sin texto seleccionable. Por favor, sube un documento digital o copia y pega el texto manualmente.',
+        'No encontramos suficiente texto legible en el PDF. Sube una copia más nítida o pega el texto de tu CV.',
         422,
         'PDF_SCANNED'
       );

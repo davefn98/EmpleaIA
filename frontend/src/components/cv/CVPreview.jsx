@@ -184,11 +184,7 @@ export default function CVPreview({
   const softSkillsString = softSkillsArr.join(', ');
   const projectsList = normalizedCv.projects;
 
-  // ── 4. ESTILOS BASE (inline para máxima compatibilidad con html2pdf) ──
-  // La hoja debe medir exactamente el ancho A4 (210mm): html2pdf clona el nodo
-  // dentro de un contenedor de 210mm, y cualquier ancho menor deja una franja
-  // blanca a la derecha del PDF. minHeight queda en 296mm (no 297mm) para que
-  // el redondeo del canvas no derrame una segunda página en blanco.
+  // La vista previa conserva el ancho A4 que utiliza la exportación.
   const PAGE = {
     fontFamily: FONT_CSS,
     width: '210mm',

@@ -10,6 +10,7 @@
 
 import { SYSTEM_PROMPT_LETTER } from '../lib/prompts.js';
 import { generateWithFallback }  from '../lib/AIProviderService.js';
+import { formatCoverLetterText } from '../lib/coverLetterText.js';
 import * as letterRepo           from '../repositories/letterRepository.js';
 
 // ---------------------------------------------------------------------------
@@ -108,7 +109,7 @@ function appError(message, status, code) {
 // ---------------------------------------------------------------------------
 
 /**
- * Genera una carta de presentación con IA y la persiste en la base de datos.
+ * Genera una carta de presentación con IA y permite revisar el resultado antes de guardarlo.
  *
  * Resiliencia de persistencia: si la IA genera la carta pero el INSERT falla,
  * se devuelve la carta con un warning en lugar de lanzar un error, para que
@@ -125,6 +126,7 @@ function appError(message, status, code) {
  * @param {string} [params.tone]
  * @param {string} [params.document_title]
  * @param {string} [params.status]
+ * @param {boolean} [params.persist=true] - Guardar al generar o devolver solo la vista previa.
  * @returns {Promise<{
  *   letterId: string|null,
  *   letterContent: string,
@@ -143,6 +145,7 @@ export async function generateLetter({
   tone,
   document_title,
   status,
+  persist = true,
   aiGenerate = generateWithFallback,
 }) {
   // 1. Obtener perfil
@@ -171,7 +174,7 @@ export async function generateLetter({
   // 5. Solo una salida real de IA puede presentarse como generación con IA.
   let letterContent;
   try {
-    letterContent = await aiGenerate({
+    const generatedText = await aiGenerate({
       useCase: 'cover_letter',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT_LETTER },
@@ -186,6 +189,7 @@ export async function generateLetter({
       userId,
       maxTokens: 1200,
     });
+    letterContent = formatCoverLetterText(generatedText, { generated: true });
     if (typeof letterContent !== 'string' || !letterContent.trim()) {
       throw new Error('Empty AI response');
     }
@@ -193,6 +197,8 @@ export async function generateLetter({
     console.warn('[letterService] Falló la generación IA:', { code: apiError.code || 'AI_UNAVAILABLE' });
     throw appError('No se pudo generar la carta con IA. Tu texto anterior se conserva; vuelve a intentarlo.', 502, 'DOCUMENT_AI_UNAVAILABLE');
   }
+
+  if (!persist) return { letterId: null, letterContent };
 
   // 6. Persistir la carta generada
   const defaultTitle = `Carta para ${company || targetRole || profile.target_role || 'Vacante'}`;

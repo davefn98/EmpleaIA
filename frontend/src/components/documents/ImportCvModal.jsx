@@ -17,7 +17,7 @@ const IMPORT_ERROR_MESSAGES = {
   NO_TEXT_EXTRACTED: 'No se pudo extraer texto automáticamente. Intenta subir un PDF con texto seleccionable o copia el contenido manualmente.',
   TEXT_TOO_SHORT: 'El texto del CV es demasiado corto para extraer datos (mínimo ~100 caracteres). Intenta pegar más contenido del documento o subir un archivo con más texto.',
   BAD_REQUEST: 'Adjunta un archivo PDF, DOCX o TXT, o pega el contenido de tu CV.',
-  PDF_SCANNED: 'El PDF parece ser un escaneo o imagen digitalizada sin texto seleccionable. Por favor, sube un documento digital o copia y pega el texto manualmente.',
+  PDF_SCANNED: 'No encontramos suficiente texto legible en el PDF. Sube una copia más nítida o pega el texto de tu CV.',
   PDF_PASSWORD_PROTECTED: 'El archivo PDF está protegido con contraseña o encriptado. Quita la protección e intenta nuevamente.',
   PDF_PARSE_ERROR: 'Ocurrió un error técnico al analizar la estructura del PDF. Intenta copiar y pegar el texto manualmente.',
   DOCX_PARSE_ERROR: 'No se pudo extraer texto del archivo Word (.docx) debido a un error de formato.'
@@ -28,7 +28,7 @@ const IMPORT_ERROR_MESSAGES = {
  * Modal flotante para importar un CV con IA (PDF, DOCX, TXT o texto pegado).
  * Autocompleta el formulario para revisión; la persistencia se confirma aparte.
  */
-export default function ImportCvModal({ open, onClose, onParsed, destination = 'document' }) {
+export default function ImportCvModal({ open, onClose, onParsed, onMeasured, destination = 'document' }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [pastedText, setPastedText] = useState('');
   const [parsing, setParsing] = useState(false);
@@ -36,6 +36,14 @@ export default function ImportCvModal({ open, onClose, onParsed, destination = '
   const [preview, setPreview] = useState(null);
   const fileInputRef = useRef(null);
   const parsingRef = useRef(false);
+  const successfulExtraction = useRef(null);
+
+  useEffect(() => {
+    if (!open || parsing || !preview || successfulExtraction.current === null) return;
+    const startedAt = successfulExtraction.current;
+    successfulExtraction.current = null;
+    onMeasured?.(startedAt, true);
+  }, [open, parsing, preview, onMeasured]);
 
   useEffect(() => { parsingRef.current = parsing; }, [parsing]);
 
@@ -94,6 +102,7 @@ export default function ImportCvModal({ open, onClose, onParsed, destination = '
 
   const handleParse = async () => {
     if (!canSubmit) return;
+    const startedAt = performance.now();
     setParsing(true);
     setError('');
     try {
@@ -109,11 +118,13 @@ export default function ImportCvModal({ open, onClose, onParsed, destination = '
       const data = await apiUpload('/cv/parse-import', formData);
 
       if (data.success && data.parsedData) {
+        successfulExtraction.current = startedAt;
         setPreview(data.parsedData);
       } else {
         throw new Error(data.error || 'No se pudo extraer la información del CV.');
       }
     } catch (err) {
+      onMeasured?.(startedAt, false);
       console.error('[ImportCvModal] Error al importar CV:', err);
       setError(IMPORT_ERROR_MESSAGES[err.code] || err.message || 'No se pudo extraer la información del CV. Intenta nuevamente.');
     } finally {

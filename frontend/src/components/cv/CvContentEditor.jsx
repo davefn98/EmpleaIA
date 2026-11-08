@@ -33,7 +33,7 @@ function Visibility({ label, shown, unavailable, onChange }) {
   );
 }
 
-function RecordsEditor({ records, kind, sectionShown, onChange }) {
+function RecordsEditor({ records, kind, sectionShown, onChange, onSaveToProfile, savingToProfile }) {
   const isExperience = kind === 'experience';
   const fields = isExperience ? experienceFields : educationFields;
   const name = isExperience ? 'puesto' : 'estudio';
@@ -92,6 +92,12 @@ function RecordsEditor({ records, kind, sectionShown, onChange }) {
                   );
                 })}
                 {record.period && !record.start_date && <p className="text-xs text-slate-500 dark:text-slate-400">Periodo guardado: {record.period}</p>}
+                {onSaveToProfile && (
+                  <button type="button" className={`${actionClass} disabled:opacity-50`} disabled={savingToProfile || !hasContent}
+                    onClick={() => onSaveToProfile({ kind: 'study', record })}>
+                    Guardar también en Mi perfil
+                  </button>
+                )}
                 {isExperience && (
                   <>
                     <label className="block text-xs font-medium">
@@ -129,7 +135,7 @@ function RecordsEditor({ records, kind, sectionShown, onChange }) {
   );
 }
 
-function SkillsEditor({ cv, onChange }) {
+function SkillsEditor({ cv, onChange, onSaveToProfile, savingToProfile }) {
   const [newSkill, setNewSkill] = useState('');
   const [destination, setDestination] = useState('technical');
   const { skillCategories, softSkills } = cv;
@@ -168,7 +174,14 @@ function SkillsEditor({ cv, onChange }) {
           <p className="mb-1 text-xs font-semibold">{label}</p>
           <div className="flex flex-wrap gap-1.5">
             {[...new Set(skills)].map((skill) => (
-              <button key={skill} type="button" aria-label={`Quitar ${skill} de ${label}`} className={actionClass} onClick={() => remove(skill)}>{skill} ×</button>
+              <div key={skill} className="flex flex-wrap items-center gap-x-2 rounded-lg border border-slate-300 px-2 py-1.5 text-xs dark:border-slate-600">
+                <button type="button" aria-label={`Quitar ${skill} de ${label}`} className="font-semibold hover:text-rose-700" onClick={() => remove(skill)}>{skill} ×</button>
+                <button type="button" disabled={savingToProfile} aria-label={`Guardar también en Mi perfil la habilidad ${skill}`}
+                  className="font-semibold text-indigo-700 underline underline-offset-2 disabled:opacity-50 dark:text-indigo-300"
+                  onClick={() => onSaveToProfile({ kind: 'skill', name: skill, type: key === 'soft' ? 'soft' : 'technical' })}>
+                  Guardar también en Mi perfil
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -188,7 +201,7 @@ function SkillsEditor({ cv, onChange }) {
   );
 }
 
-export default function CvContentEditor({ document, visibleSections, onChange, onContactChange, onVisibilityChange }) {
+export default function CvContentEditor({ document, visibleSections, onChange, onContactChange, onVisibilityChange, onSaveToProfile, savingToProfile }) {
   const [section, setSection] = useState('summary');
   const selectId = useId();
   const cv = normalizeCvData(document.personal_info, document);
@@ -250,17 +263,18 @@ export default function CvContentEditor({ document, visibleSections, onChange, o
           {visibility('education', 'la sección de educación', recordSectionNotice(
             education, hasCvEducation, educationShown, 'Todavía no hay estudios para mostrar.', 'Todos los estudios están ocultos.'
           ))}
-          <RecordsEditor key="education" records={education} kind="education" sectionShown={educationShown} onChange={(records) => onChange({ academic_background: records })} />
+          <RecordsEditor key="education" records={education} kind="education" sectionShown={educationShown}
+            onChange={(records) => onChange({ academic_background: records })} onSaveToProfile={onSaveToProfile} savingToProfile={savingToProfile} />
         </>
       )}
       {section === 'skills' && (
         <>
           {visibility('skillsTech', 'las habilidades técnicas', cv.technicalSkills.length || cv.certifications.length ? undefined : 'Todavía no hay habilidades técnicas ni certificaciones para mostrar.')}
           {visibility('skillsSoft', 'las habilidades blandas', cv.softSkills.length ? undefined : 'Todavía no hay habilidades blandas para mostrar.')}
-          <SkillsEditor cv={cv} onChange={onChange} />
+          <SkillsEditor cv={cv} onChange={onChange} onSaveToProfile={onSaveToProfile} savingToProfile={savingToProfile} />
         </>
       )}
-      <p className="text-xs text-slate-500 dark:text-slate-400">Estos cambios se aplican a este CV.</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400">Los cambios se aplican a este CV. Puedes guardar estudios y habilidades también en Mi perfil.</p>
     </section>
   );
 }

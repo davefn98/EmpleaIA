@@ -1,12 +1,14 @@
-import { lazy, Suspense, useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from './utils/supabaseClient';
 import { apiRequest } from './utils/api';
 import { normalizeProfile } from './utils/userData';
 import { canNavigate } from './utils/unsavedChanges';
+import { NEW_LETTER_PATH, readDocumentDraftPath } from './utils/documentDraftRoute';
+import { startDocumentVisit } from './utils/documentPreparationTiming';
 import AppLayout from './components/layout/AppLayout';
-import Landing from './views/Landing';
 import Login from './views/Login';
 const Dashboard = lazy(() => import('./views/Dashboard'));
+const Pi2Validation = lazy(() => import('./views/Pi2Validation'));
 const ProfileView = lazy(() => import('./views/ProfileView'));
 const CvCustomize = lazy(() => import('./views/CvCustomize'));
 const Documents = lazy(() => import('./views/Documents'));
@@ -15,35 +17,23 @@ const CompareInterviews = lazy(() => import('./views/CompareInterviews'));
 const ActivityHistory = lazy(() => import('./views/ActivityHistory'));
 const Drafts = lazy(() => import('./views/Drafts'));
 const SettingsView = lazy(() => import('./views/SettingsView'));
+const AvisoDeDatos = lazy(() => import('./views/AvisoDeDatos'));
 import { BookOpen, Sparkles, TrendingUp, FileText, MessageSquare, Clock, Mail } from 'lucide-react';
 
-function App() {
+const CV_TARGET_PATH = '/documents/cv/puesto-objetivo';
+
+function App({ theme, onToggleTheme }) {
   const [user, setUser] = useState(null);
+  const [accountClosed, setAccountClosed] = useState(false);
   const [currentPath, setCurrentPath] = useState(window.location.pathname);
   const currentPathRef = useRef(currentPath);
+  const documentVisitRef = useRef(null);
+  const [navigationIndex, setNavigationIndex] = useState(0);
   useEffect(() => { currentPathRef.current = currentPath; }, [currentPath]);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
   // Permite que el modal de inactividad resetee los timers definidos en el efecto 2.b
   const inactivityResetRef = useRef(null);
-
-  // Lógica de tema Light / Dark
-  const [theme, setTheme] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('theme') || 'light';
-    }
-    return 'light';
-  });
-
-  useEffect(() => {
-    localStorage.setItem('theme', theme);
-    const isPublicRoute = currentPath === '/' || currentPath === '/login' || currentPath === '/register';
-    document.documentElement.classList.toggle('dark', Boolean(user) && !isPublicRoute && theme === 'dark');
-  }, [theme, user, currentPath]);
-
-  const toggleTheme = () => {
-    setTheme(prev => prev === 'dark' ? 'light' : 'dark');
-  };
 
   // Estados de datos cargados en tiempo real para vistas internas
   const [profile, setProfile] = useState(null);
@@ -57,16 +47,27 @@ function App() {
     if (path === window.location.pathname) return;
     if (!canNavigate(window, path)) return;
     window.history.pushState({}, '', path);
+    setNavigationIndex((index) => index + 1);
     setCurrentPath(path);
   };
+
+  const replaceDocumentPath = useCallback((path) => {
+    if (currentPath !== window.location.pathname || path === currentPath) return;
+    window.history.replaceState({}, '', path);
+    setCurrentPath(path);
+  }, [currentPath]);
 
   // Función compatible con setActiveView utilizada por Sidebar y subcomponentes
   const setActiveView = (viewName) => {
     const pathToView = {
       dashboard: '/dashboard',
+      'pi2-validation': '/validacion-pi2',
       profile: '/profile/view',
+      'profile-edit': '/profile/edit',
+      'profile-import': '/profile/import',
       documents: '/documents/cv',
       'documents-cv': '/documents/cv',
+      'cv-target': CV_TARGET_PATH,
       'documents-cover-letter': '/documents/cover-letter',
       interviews: '/interviews',
       compare: '/interviews/compare',
@@ -74,36 +75,44 @@ function App() {
       metrics: '/metrics',
       resources: '/resources',
       settings: '/settings',
-      drafts: '/drafts',
-      landing: '/',
-      login: '/login'
+      drafts: '/drafts'
     };
     navigateTo(pathToView[viewName] || '/dashboard');
   };
 
   // Obtener la vista activa calculada a partir del pathname y estado de login (soportando rutas en español y módulos específicos)
+  const documentDraft = readDocumentDraftPath(currentPath);
+  const resumeLatestLetter = currentPath === '/documents/cover-letter' || currentPath === '/generar-documentos/carta';
   let activeView;
   if (!user) {
-    if (currentPath === '/login') activeView = 'login';
-    else activeView = 'landing';
+    activeView = 'login';
   } else {
     if (currentPath === '/profile' || currentPath === '/mi-perfil') activeView = 'profile-view';
     else if (currentPath === '/profile/view') activeView = 'profile-view'; // HU06 view profile
-    else if (currentPath === '/profile/edit') activeView = 'profile';
+    else if (currentPath === '/profile/edit' || currentPath === '/profile/import') activeView = 'profile';
     else if (currentPath === '/documents/cv/customize') activeView = 'cv-customize'; // HU15 customizer
-    else if (currentPath === '/documents/cv' || currentPath === '/generar-documentos/cv') activeView = 'documents-cv';
-    else if (currentPath === '/documents/cover-letter' || currentPath === '/generar-documentos/carta') activeView = 'documents-cover-letter';
+    else if (documentDraft?.type === 'cv' || currentPath === '/documents/cv' || currentPath === CV_TARGET_PATH || currentPath === '/generar-documentos/cv') activeView = 'documents-cv';
+    else if (documentDraft?.type === 'cover-letter' || resumeLatestLetter || currentPath === NEW_LETTER_PATH) activeView = 'documents-cover-letter';
     else if (currentPath === '/documents' || currentPath === '/generar-documentos') activeView = 'documents-cv';
     else if (currentPath === '/interviews/compare') activeView = 'compare';
     else if (currentPath === '/interviews' || currentPath === '/entrevistas') activeView = 'interviews';
     else if (currentPath === '/historial' || currentPath === '/history') activeView = 'history';
     else if (currentPath === '/metrics' || currentPath === '/mis-metricas') activeView = 'dashboard';
+    else if (currentPath === '/validacion-pi2') activeView = 'pi2-validation';
     else if (currentPath === '/resources') activeView = 'resources';
     else if (currentPath === '/settings') activeView = 'settings';
     else if (currentPath === '/drafts' || currentPath === '/borradores') activeView = 'drafts';
     else if (currentPath === '/dashboard' || currentPath === '/inicio') activeView = 'dashboard';
     else activeView = 'dashboard';
   }
+
+  const userId = user?.id;
+  useEffect(() => {
+    // Guardar un borrador reemplaza la ruta dentro de la misma visita.
+    const type = { 'documents-cv': 'cv', 'documents-cover-letter': 'letter' }[activeView];
+    documentVisitRef.current = userId && type ? startDocumentVisit(userId, type) : null;
+    return () => { documentVisitRef.current = null; };
+  }, [activeView, userId, navigationIndex]);
 
   useEffect(() => {
     if (user) {
@@ -124,6 +133,7 @@ function App() {
         window.history.pushState({}, '', currentPathRef.current);
         return;
       }
+      setNavigationIndex((index) => index + 1);
       setCurrentPath(window.location.pathname);
     };
     window.addEventListener('popstate', handlePopState);
@@ -140,7 +150,7 @@ function App() {
         }
       } else {
         setUser(null);
-        if (window.location.pathname !== '/' && window.location.pathname !== '/login') {
+        if (window.location.pathname !== '/' && window.location.pathname !== '/login' && window.location.pathname !== '/privacidad') {
           navigateTo('/login');
         }
       }
@@ -237,6 +247,7 @@ function App() {
       setHasActivity(false);
       return;
     }
+    if (currentPath === '/privacidad') return;
 
     const loadUserData = async () => {
       setLoadingViewData(true);
@@ -335,7 +346,15 @@ function App() {
   }, [user, currentPath]);
 
   const handleLoginSuccess = () => {
+    setAccountClosed(false);
     setActiveView('dashboard');
+  };
+
+  const handleAccountClosed = () => {
+    setAccountClosed(true);
+    setUser(null);
+    setHistory([]);
+    navigateTo('/login');
   };
 
   if (checkingAuth) {
@@ -349,19 +368,19 @@ function App() {
     );
   }
 
+  if (currentPath === '/privacidad') {
+    return (
+      <Suspense fallback={<p className="p-6 text-sm text-slate-500">Cargando política de privacidad…</p>}>
+        <AvisoDeDatos signedIn={Boolean(user)} />
+      </Suspense>
+    );
+  }
+
   // ==========================================
   // RENDERING RUTAS PÚBLICAS
   // ==========================================
   if (!user) {
-    if (activeView === 'login') {
-      return (
-        <Login 
-          onLoginSuccess={handleLoginSuccess} 
-          onBackToHome={() => setActiveView('landing')} 
-        />
-      );
-    }
-    return <Landing onStart={() => setActiveView('login')} />;
+    return <Login accountClosed={accountClosed} onLoginSuccess={handleLoginSuccess} theme={theme} onToggleTheme={onToggleTheme} />;
   }
 
   // ==========================================
@@ -374,7 +393,7 @@ function App() {
       pathname={currentPath}
       onNavigate={setActiveView}
       theme={theme}
-      onToggleTheme={toggleTheme}
+      onToggleTheme={onToggleTheme}
     >
       <Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center text-sm text-slate-500">Cargando m?dulo?</div>}>
         {showTimeoutWarning && (
@@ -405,19 +424,20 @@ function App() {
           </div>
         )}
 
-        {activeView === 'dashboard' && <Dashboard setActiveView={setActiveView} />}
+        {activeView === 'dashboard' && <Dashboard setActiveView={setActiveView} navigateTo={navigateTo} />}
+        {activeView === 'pi2-validation' && <Pi2Validation key={user.id} userId={user.id} />}
         
-        {activeView === 'profile' && <Documents key="profile-editor" mode="profile" initialDocType="cv" navigateTo={navigateTo} />}
+        {activeView === 'profile' && <Documents key={currentPath} mode="profile" initialDocType="cv" openImportOnMount={currentPath === '/profile/import'} navigateTo={navigateTo} />}
 
-        {activeView === 'profile-view' && <ProfileView navigateTo={navigateTo} />}
+        {activeView === 'profile-view' && <ProfileView navigateTo={navigateTo} onProfileSaved={(savedProfile) => setProfile(normalizeProfile(savedProfile))} />}
 
         {activeView === 'cv-customize' && <CvCustomize navigateTo={navigateTo} />}
         
         {activeView === 'documents' && <Documents initialDocType="select" navigateTo={navigateTo} />}
         
-        {activeView === 'documents-cv' && <Documents initialDocType="cv" navigateTo={navigateTo} />}
+        {activeView === 'documents-cv' && <Documents key={currentPath} initialDocType="cv" openTargetOnMount={currentPath === CV_TARGET_PATH} navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceDocumentPath} documentVisitRef={documentVisitRef} />}
         
-        {activeView === 'documents-cover-letter' && <Documents initialDocType="letter" navigateTo={navigateTo} />}
+        {activeView === 'documents-cover-letter' && <Documents key={currentPath} initialDocType="letter" navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceDocumentPath} resumeLatestLetter={resumeLatestLetter} documentVisitRef={documentVisitRef} />}
         
         {activeView === 'drafts' && <Drafts navigateTo={navigateTo} />}
         
@@ -684,7 +704,7 @@ function App() {
         )}
 
         {/* SETTINGS VIEW */}
-        {activeView === 'settings' && <SettingsView user={user} profile={profile} />}
+        {activeView === 'settings' && <SettingsView user={user} profile={profile} onAccountClosed={handleAccountClosed} />}
 
       </Suspense>
     </AppLayout>

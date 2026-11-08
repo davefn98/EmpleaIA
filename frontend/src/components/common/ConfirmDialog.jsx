@@ -83,7 +83,7 @@ export default function ConfirmDialog({
           <h3 id="confirm-dialog-title" className="text-base font-black leading-tight text-slate-950 dark:text-white">
             {title || 'Confirma esta acción'}
           </h3>
-          <p id="confirm-dialog-message" className="px-1 text-xs font-medium leading-relaxed text-slate-500 dark:text-slate-400">
+          <p id="confirm-dialog-message" className="whitespace-pre-line px-1 text-xs font-medium leading-relaxed text-slate-500 dark:text-slate-400">
             {message || 'Esta acción requiere confirmación.'}
           </p>
         </div>

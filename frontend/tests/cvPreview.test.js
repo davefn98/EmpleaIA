@@ -6,7 +6,6 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import react from '@vitejs/plugin-react';
 import { createServer } from 'vite';
-import { PDF_PAGEBREAK_OPTIONS } from '../src/utils/exportToPdf.js';
 
 const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let vite;
@@ -160,7 +159,7 @@ test('colecciones históricas malformadas no dejan la pantalla del CV en blanco'
   assert.doesNotThrow(() => renderToStaticMarkup(React.createElement(CVPreview, { cvData: { work_experience: 'texto antiguo', academic_background: {} } })));
 });
 
-test('las seis plantillas renderizan el contrato nuevo y los selectores usados por html2pdf', () => {
+test('las seis plantillas renderizan el contrato y los marcadores de paginación del PDF', () => {
   const templates = ['classic', 'modern-sidebar', 'minimal', 'executive', 'tech', 'creative-simple'];
   const renderedTemplates = [];
   const longBullet = 'Implementó una mejora medible y documentada. '.repeat(20);
@@ -202,12 +201,7 @@ test('las seis plantillas renderizan el contrato nuevo y los selectores usados p
   }
 
   const renderedMarkup = renderedTemplates.join('');
-  for (const selector of PDF_PAGEBREAK_OPTIONS.avoid) {
-    if (selector.startsWith('.')) {
-      assert.match(renderedMarkup, new RegExp(`class="[^"]*${selector.slice(1)}`), `${selector} debe existir en el CV real`);
-    } else {
-      assert.equal(selector, '[data-pdf-keep-together="true"]');
-      assert.match(renderedMarkup, /data-pdf-keep-together="true"/, `${selector} debe existir en el CV real`);
-    }
-  }
+  assert.match(renderedMarkup, /class="pdf-experience-heading"/);
+  assert.match(renderedMarkup, /class="pdf-keep-together"/);
+  assert.match(renderedMarkup, /data-pdf-keep-together="true"/);
 });

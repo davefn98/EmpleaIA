@@ -1,24 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  exportToPdf,
-  createPdfOptions,
-  PDF_PAGEBREAK_OPTIONS,
-  __setHtml2PdfLoaderForTests
-} from '../src/utils/exportToPdf.js';
+import { exportToPdf } from '../src/utils/exportToPdf.js';
 
 const originalDocument = globalThis.document;
 const originalURL = globalThis.URL;
 const originalWindow = globalThis.window;
+const originalGetComputedStyle = globalThis.getComputedStyle;
+const html = '<div id="cv-sheet-a4-canvas"><p>Experiencia profesional</p></div>';
 
-const setupBrowserMocks = ({ element = { scrollWidth: 794, offsetWidth: 794 } } = {}) => {
+const setupBrowserMocks = () => {
   const clicks = [];
   const appended = [];
   const revoked = [];
   const createdUrls = [];
+  const styles = new Map();
+  const element = {
+    querySelectorAll: () => [],
+    cloneNode: () => ({ outerHTML: html, querySelectorAll: () => [], style: { setProperty: (key, value) => styles.set(key, value) } }),
+  };
+  globalThis.getComputedStyle = () => ({ getPropertyValue: (key) => key === 'font-size' ? '13px' : '' });
 
   globalThis.document = {
-    fonts: { ready: Promise.resolve() },
     getElementById: () => element,
     createElement: (tagName) => {
       assert.equal(tagName, 'a');
@@ -49,41 +51,14 @@ const setupBrowserMocks = ({ element = { scrollWidth: 794, offsetWidth: 794 } } 
     }
   };
 
-  return { clicks, appended, revoked, createdUrls };
-};
-
-const createHtml2PdfMock = ({ blob = new Blob(['pdf'], { type: 'application/pdf' }), fail = false } = {}) => {
-  const calls = [];
-  const worker = {
-    set(options) {
-      calls.push(['set', options]);
-      return worker;
-    },
-    from(element) {
-      calls.push(['from', element]);
-      return worker;
-    },
-    toPdf() {
-      calls.push(['toPdf']);
-      return worker;
-    },
-    async outputPdf(type) {
-      calls.push(['outputPdf', type]);
-      if (fail) throw new Error('Fallo simulado generando PDF');
-      return blob;
-    }
-  };
-
-  const html2pdf = () => worker;
-  html2pdf.calls = calls;
-  return html2pdf;
+  return { clicks, appended, revoked, createdUrls, styles };
 };
 
 const restoreGlobals = () => {
   globalThis.document = originalDocument;
   globalThis.URL = originalURL;
   globalThis.window = originalWindow;
-  __setHtml2PdfLoaderForTests(null);
+  globalThis.getComputedStyle = originalGetComputedStyle;
 };
 
 test('exportToPdf: arroja DOM_NOT_FOUND si el elemento no existe en el DOM y no abre ventanas', async () => {
@@ -129,11 +104,12 @@ test('exportToPdf: genera un blob PDF y mantiene su URL hasta iniciar la descarg
   };
 
   const pdfBlob = new Blob(['pdf'], { type: 'application/pdf' });
-  const html2pdf = createHtml2PdfMock({ blob: pdfBlob });
-  __setHtml2PdfLoaderForTests(() => html2pdf);
-
   try {
-    const result = await exportToPdf('cv-sheet-a4-canvas', 'CV_Test.pdf');
+    const result = await exportToPdf('cv-sheet-a4-canvas', 'CV_Test.pdf', async (preview) => {
+      assert.equal(preview, html);
+      assert.equal(browser.styles.get('font-size'), '13px');
+      return pdfBlob;
+    });
 
     assert.equal(result, true);
     assert.equal(openCalled, false, 'window.open no debe usarse');
@@ -144,45 +120,33 @@ test('exportToPdf: genera un blob PDF y mantiene su URL hasta iniciar la descarg
     assert.deepEqual(browser.revoked, ['blob:empleaia-pdf']);
     assert.equal(browser.appended.length, 1);
     assert.deepEqual(browser.clicks, [{ href: 'blob:empleaia-pdf', download: 'CV_Test.pdf' }]);
-    assert.equal(html2pdf.calls[0][0], 'set');
-    assert.equal(html2pdf.calls[1][0], 'from');
-    assert.equal(html2pdf.calls[2][0], 'toPdf');
-    assert.deepEqual(html2pdf.calls[3], ['outputPdf', 'blob']);
-    assert.equal(html2pdf.calls[0][1].jsPDF.format, 'a4');
-    assert.deepEqual(html2pdf.calls[0][1].pagebreak, PDF_PAGEBREAK_OPTIONS);
   } finally {
     restoreGlobals();
   }
 });
 
-test('createPdfOptions: usa selectores de paginación reales sin avoid-all ni secciones completas', () => {
-  const options = createPdfOptions({ scrollWidth: 820, offsetWidth: 794 }, 'CV.pdf');
-
-  assert.deepEqual(options.pagebreak.mode, ['css', 'legacy']);
-  assert.equal(options.pagebreak.mode.includes('avoid-all'), false);
-  assert.equal(options.pagebreak.avoid.includes('.pdf-section-heading'), true);
-  assert.equal(options.pagebreak.avoid.includes('.pdf-experience-heading'), true);
-  assert.equal(options.pagebreak.avoid.includes('[data-pdf-keep-together="true"]'), true);
-  assert.equal(options.html2canvas.windowWidth, 820);
-  assert.equal(options.filename, 'CV.pdf');
-});
-
 test('exportToPdf: propaga errores de generación como PDF_EXPORT_ERROR', async () => {
   setupBrowserMocks();
-  const html2pdf = createHtml2PdfMock({ fail: true });
-  __setHtml2PdfLoaderForTests(() => html2pdf);
 
   try {
     await assert.rejects(
-      async () => {
-        await exportToPdf('cv-sheet-a4-canvas', 'CV_Test.pdf');
-      },
+      () => exportToPdf('cv-sheet-a4-canvas', 'CV_Test.pdf', async () => { throw new Error('Fallo simulado generando PDF'); }),
       (err) => {
         assert.equal(err.code, 'PDF_EXPORT_ERROR');
         assert.match(err.message, /Fallo simulado/);
         return true;
       }
     );
+  } finally {
+    restoreGlobals();
+  }
+});
+
+test('exportToPdf: rechaza respuestas sin PDF y evita descargar un archivo inválido', async () => {
+  const browser = setupBrowserMocks();
+  try {
+    await assert.rejects(() => exportToPdf('cv-sheet-a4-canvas', 'CV_Test.pdf', async () => ({ success: true })), /PDF válido/);
+    assert.equal(browser.clicks.length, 0);
   } finally {
     restoreGlobals();
   }

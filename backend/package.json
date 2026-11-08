@@ -12,7 +12,10 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
     "@google/genai": "^2.10.0",
+    "@napi-rs/canvas": "^0.1.80",
     "@supabase/supabase-js": "^2.43.4",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/spa": "^1.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
@@ -21,8 +24,11 @@
     "multer": "^2.1.1",
     "openai": "^4.52.0",
     "pdf-parse": "^2.4.5",
+    "puppeteer": "^24.43.1",
+    "sanitize-html": "^2.18.1",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
+    "tesseract.js": "^7.0.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

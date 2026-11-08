@@ -9,7 +9,7 @@ export const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost
  * @param {object} body - Payload JSON a enviar
  * @returns {Promise<object>} - Respuesta JSON deserializada
  */
-export async function apiRequest(endpoint, method = 'POST', body = null, timeoutMs = 60000) {
+export async function apiRequest(endpoint, method = 'POST', body = null, timeoutMs = 60000, responseType = 'json') {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -51,6 +51,9 @@ export async function apiRequest(endpoint, method = 'POST', body = null, timeout
 
     // Si la respuesta no es JSON (ej. error crítico del servidor web)
     const contentType = response.headers.get('content-type');
+    if (response.ok && responseType === 'pdf' && contentType?.includes('application/pdf')) {
+      return response.blob();
+    }
     if (!contentType || !contentType.includes('application/json')) {
       throw new Error(`Respuesta no esperada del servidor (${response.status})`);
     }

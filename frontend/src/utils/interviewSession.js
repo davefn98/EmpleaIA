@@ -15,6 +15,17 @@ export const interviewAverageScore = (responses=[]) => {
  return scores.length ? Math.round(scores.reduce((a,b)=>a+b,0)/scores.length) : null;
 };
 
+export function hasInterviewsToCompare(interviews) {
+  const evaluated = interviews.filter((interview) => {
+    if (!['completed', 'completed_early'].includes(interview.status)) return false;
+
+    const messages = [...(interview.interview_messages || [])]
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    return interviewAverageScore(restoreInterviewResponses(messages)) !== null;
+  });
+  return evaluated.length >= 2;
+}
+
 // La modalidad canónica viaja junto a la instantánea y se guarda atómicamente al pausar.
 export const resolveInterviewResponseMode = (snapshot, messages = [], localMode = null) => {
   let context = snapshot;

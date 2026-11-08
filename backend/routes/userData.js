@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../lib/authMiddleware.js';
 import { asyncHandler } from '../lib/asyncHandler.js';
 import { ensureUserProfile } from '../services/profileService.js';
+import { formatSavedCoverLetter } from '../lib/coverLetterText.js';
 const router = Router();
 router.get('/dashboard/:userId', requireAuth, asyncHandler(async (req, res) => {
   const userId=req.user.id, db=req.db;
@@ -35,7 +36,7 @@ router.get('/activity/:userId', requireAuth, asyncHandler(async (req,res)=>{
   ]);
   const error=cvs.error||letters.error||interviews.error;
   if(error){console.error('[/activity] Error:',error.message);return res.status(400).json({error:'No se pudo cargar el historial.',code:'ACTIVITY_QUERY_FAILED'});}
-  return res.json({success:true,cvs:cvs.data||[],letters:letters.data||[],interviews:interviews.data||[]});
+  return res.json({success:true,cvs:cvs.data||[],letters:(letters.data||[]).map(formatSavedCoverLetter),interviews:interviews.data||[]});
 }));
 router.get('/documents/cvs/:userId',requireAuth,asyncHandler(async(req,res)=>{
   if (req.params.userId && req.params.userId !== req.user.id) {
@@ -65,7 +66,7 @@ router.get('/user-snapshot/:userId', requireAuth, asyncHandler(async (req,res)=>
   ]);
   const error=academic.error||work.error||cvs.error||letters.error||interviews.error;
   if(error){console.error('[/user-snapshot] Error:',error.message);return res.status(400).json({error:'No se pudieron cargar los datos del usuario.',code:'USER_SNAPSHOT_FAILED'});}
-  return res.json({success:true,profile:profileResult.profile,academic:academic.data||[],work:work.data||[],cvs:cvs.data||[],letters:letters.data||[],interviews:interviews.data||[]});
+  return res.json({success:true,profile:profileResult.profile,academic:academic.data||[],work:work.data||[],cvs:cvs.data||[],letters:(letters.data||[]).map(formatSavedCoverLetter),interviews:interviews.data||[]});
 }));
 router.get('/interview-summary/:interviewId',requireAuth,asyncHandler(async(req,res)=>{
   const {data,error}=await req.db.from('interviews').select('difficulty_level, gestural_summary').eq('id',req.params.interviewId).eq('profile_id',req.user.id).single();

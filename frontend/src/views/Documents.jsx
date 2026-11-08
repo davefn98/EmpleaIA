@@ -31,14 +31,48 @@ import TemplateSelector from '../components/cv/TemplateSelector';
 import ColorSelector from '../components/cv/ColorSelector';
 import FontSelector from '../components/cv/FontSelector';
 import SectionToggle from '../components/cv/SectionToggle';
-import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, readStoredCvTheme, cvEditorSnapshot } from '../utils/documentDrafts';
+import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, letterContextSnapshot, readStoredCvTheme, cvEditorSnapshot } from '../utils/documentDrafts';
 import { protectUnsavedChanges } from '../utils/unsavedChanges';
+import { cvDraftPath, letterDraftPath } from '../utils/documentDraftRoute';
 import { missingProfileSaveFields, profileSaveIssues } from '../utils/profileSaveIssues';
+import { recordGenerationAttempt } from '../utils/documentGenerationMetrics';
+import { completeDocumentVisit, markDocumentGenerated } from '../utils/documentPreparationTiming';
+import { PILOT_BUILD } from '../utils/pi2Validation';
+
+function recordDocumentOperation(userId, type, startedAt, success, regeneration, finishedAt = performance.now()) {
+  if (!userId) return;
+  const attempt = type === 'cv' || type === 'letter'
+    ? recordGenerationAttempt(userId, type, startedAt, success, regeneration)
+    : { id: crypto.randomUUID(), durationMs: Math.round(finishedAt - startedAt) };
+  if (attempt.durationMs < 0 || attempt.durationMs > 86400000) return;
+  void supabase.rpc('pi2_record_generation', {
+    p_id: attempt.id, p_user_id: userId, p_type: type, p_duration_ms: attempt.durationMs,
+    p_success: success, p_regeneration: regeneration, p_build: PILOT_BUILD,
+  }).then(({ error }) => {
+    if (error && error.code !== 'PGRST202') console.warn('No se pudo registrar la medición del piloto.', error.code);
+  });
+}
+
 
 const ensureItemIds = (items, prefix) => (items || []).map((item, index) => ({
   ...item,
   id: item.id || `${prefix}-temp-${index}-${Date.now()}-${Math.random()}`
 }));
+
+function linkSavedCvStudies(document, profileStudies) {
+  const field = Array.isArray(document?.academic_background) ? 'academic_background' : 'education';
+  if (!Array.isArray(document?.[field])) return document;
+  const normalize = (value) => String(value ?? '').trim().replace(/\s+/g, ' ').toLocaleLowerCase('es');
+  return {
+    ...document,
+    [field]: document[field].map((study) => {
+      if (!study || profileStudies.some(({ id }) => id === study.id)) return study;
+      const matches = profileStudies.filter((record) => ['institution', 'degree', 'start_date']
+        .every((key) => normalize(record[key]) === normalize(study[key])));
+      return matches.length === 1 ? { ...study, id: matches[0].id } : study;
+    }),
+  };
+}
 
 const normalizeSkillList = (skills) => {
   if (Array.isArray(skills)) return skills.filter((skill) => typeof skill === 'string');
@@ -73,9 +107,14 @@ function useTemporaryNotice(durationMs) {
   return [notice?.value, showNotice];
 }
 
-export default function Documents({ initialDocType = 'select', navigateTo, mode = 'document' }) {
+export default function Documents({ initialDocType = 'select', navigateTo, mode = 'document', openImportOnMount = false, openTargetOnMount = false, documentDraft, replaceDocumentPath, resumeLatestLetter = false, documentVisitRef }) {
   const isProfileEditor = mode === 'profile';
+  const draftId = documentDraft?.id;
+  const draftAsCopy = documentDraft?.asCopy;
   const { toast, showConfirm } = useNotification();
+  const savingCvProfileItem = useRef(false);
+  const [savingToProfile, setSavingToProfile] = useState(false);
+  const completedGenerationRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [errorMsg, setErrorMsg] = useTemporaryNotice(5000);
@@ -148,11 +187,11 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   const [downloadingCv, setDownloadingCv] = useState(false);
   const [savingCvDraft, setSavingCvDraft] = useState(false);
   const [hasUnpersistedCv, setHasUnpersistedCv] = useState(false);
-  const [pendingCvExit, setPendingCvExit] = useState(null);
-  const confirmedCvExit = useRef(null);
+  const [pendingDocumentExit, setPendingDocumentExit] = useState(null);
+  const confirmedDocumentExit = useRef(null);
   const [finalCvData, setFinalCvData] = useState(null);
   const [showCvContentEditor, setShowCvContentEditor] = useState(false);
-  const [showImportModal, setShowImportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(openImportOnMount);
   const [cvId, setCvId] = useState(null);
   const [cvTitle, setCvTitle] = useState('');
   const [copySourceTitle, setCopySourceTitle] = useState('');
@@ -161,7 +200,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   // Instantáneas para guardado explícito y detección de cambios.
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState(null);
   const [savedTheme, setSavedTheme] = useState(initialTheme);
-  const [savedLetterSnapshot, setSavedLetterSnapshot] = useState('');
+  const [savedLetterSnapshot, setSavedLetterSnapshot] = useState(null);
 
   // ==========================================
   // ESTADOS DE CARTA DE PRESENTACIÓN
@@ -173,15 +212,24 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   const [tone, setTone] = useState('profesional');
   const [letterContent, setLetterContent] = useState('');
   const [generatingLetter, setGeneratingLetter] = useState(false);
+  useEffect(() => {
+    const attempt = completedGenerationRef.current;
+    if (!attempt || generatingCv || generatingLetter) return;
+    completedGenerationRef.current = null;
+    markDocumentGenerated(attempt.visit, attempt.regeneration);
+    recordDocumentOperation(attempt.userId, attempt.type, attempt.startedAt, true, attempt.regeneration);
+  }, [generatingCv, generatingLetter]);
   const [copied, setCopied] = useState(false);
-  const [pastLetters, setPastLetters] = useState([]);
   const [downloadingLetter, setDownloadingLetter] = useState(false);
+  const [savingLetterDraft, setSavingLetterDraft] = useState(false);
   const [letterId, setLetterId] = useState(null);
+  const [hasUnpersistedLetter, setHasUnpersistedLetter] = useState(false);
+  const [generatedLetterContext, setGeneratedLetterContext] = useState('');
 
 
 
-  const applyLetterDocument = (letter) => {
-    const saved = restoreLetterDocument(letter);
+  const applyLetterDocument = (letter, asCopy = false) => {
+    const saved = restoreLetterDocument(letter, { asCopy });
     setLetterId(saved.id);
     setLetterContent(saved.content);
     setJobOfferText(saved.jobOfferText);
@@ -189,16 +237,19 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     setTargetRole(saved.targetRole);
     setJobDescription(saved.jobDescription);
     setTone(saved.tone);
-    setSavedLetterSnapshot(JSON.stringify({ content: saved.content, company: saved.company, targetRole: saved.targetRole, jobDescription: saved.jobDescription, tone: saved.tone }));
+    setGeneratedLetterContext(letterContextSnapshot(saved));
+    setHasUnpersistedLetter(false);
+    setSavedLetterSnapshot({ content: saved.content, company: saved.company, targetRole: saved.targetRole, jobDescription: saved.jobDescription, tone: saved.tone });
   };
 
   useEffect(() => {
     let active = true;
-    // Capture the selection before awaiting: StrictMode may start a second load.
-    const editCvId = !isProfileEditor && docType === 'cv' ? localStorage.getItem('empleaia_edit_cv_id') : null;
-    const useCvAsCopy = Boolean(editCvId && localStorage.getItem('empleaia_edit_cv_as_copy') === 'true');
-    const editLetterId = docType === 'letter' ? localStorage.getItem('empleaia_edit_letter_id') : null;
-    const historical = !isProfileEditor && docType === 'cv' ? localStorage.getItem('empleaia_historical_cv_data') : null;
+    const editCvId = !isProfileEditor && docType === 'cv' ? draftId : null;
+    const useCvAsCopy = Boolean(editCvId && draftAsCopy);
+    const editLetterId = docType === 'letter' ? draftId : null;
+    const historical = !isProfileEditor && docType === 'cv' && !editCvId
+      ? localStorage.getItem('empleaia_historical_cv_data')
+      : null;
     const loadWizardData = async () => {
       setLoading(true);
       setErrorMsg('');
@@ -209,9 +260,16 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         const uid = session.user.id;
         const snapshot = await loadUserSnapshot(uid);
         if (!active) return;
+        if (resumeLatestLetter) {
+          // The snapshot returns letters ordered by creation date, newest first.
+          const latestLetter = snapshot.letters.find((letter) => letter.id && letter.letter_content?.trim());
+          if (latestLetter) {
+            replaceDocumentPath(letterDraftPath(latestLetter.id, true));
+            return;
+          }
+        }
         const master = { ...snapshot.profile, id: uid, academic_background: snapshot.academic || [], work_experience: snapshot.work || [] };
         setProfile(master);
-        setPastLetters(snapshot.letters || []);
 
         const savedCv = editCvId ? (snapshot.cvs || []).find((cv) => cv.id === editCvId) : null;
         const savedLetter = editLetterId ? (snapshot.letters || []).find((letter) => letter.id === editLetterId) : null;
@@ -222,8 +280,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
           throw new Error('Este borrador no contiene un CV válido. Vuelve a Mis borradores y selecciona otra versión.');
         }
         if (savedLetter) {
-          applyLetterDocument(savedLetter);
-          localStorage.removeItem('empleaia_edit_letter_id');
+          applyLetterDocument(savedLetter, draftAsCopy);
         } else if (docType === 'letter') {
           applyLetterDocument({
             target_role: master.target_role,
@@ -231,7 +288,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
           });
         }
 
-        const savedData = savedCv?.cv_data || (historical ? JSON.parse(historical) : null);
+        const savedData = linkSavedCvStudies(savedCv?.cv_data || (historical ? JSON.parse(historical) : null), master.academic_background);
         const editor = savedData
           ? restoreCvDocument(savedData)
           : { ...master, email: master.contact_email ?? master.email ?? '' };
@@ -260,7 +317,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         setCvTitle(savedCv?.document_title || '');
         setCopySourceTitle(useCvAsCopy ? savedCv?.document_title || 'CV' : '');
         setShowCvContentEditor(Boolean(savedCv));
-        setCvStep(isProfileEditor ? 1 : savedData ? 4 : 2);
+        setCvStep(isProfileEditor ? 1 : savedData && !openTargetOnMount ? 4 : 2);
         setCvFocus(editor.cv_focus || 'ATS');
         setLastSavedSnapshot({ ...editor, bio: sourceBio, work_experience: experience, academic_background: education });
 
@@ -275,8 +332,6 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
           setHeaderStyle(style.headerStyle);
           setVisibleSections(style.visibleSections);
           setSectionOrder(style.sectionOrder);
-          localStorage.removeItem('empleaia_edit_cv_id');
-          localStorage.removeItem('empleaia_edit_cv_as_copy');
           if (!savedData?.personal_info && !savedData?.first_name) {
             setSuccessMsg('Este borrador antiguo no guardó los datos personales originales. Se conserva su contenido; revisa los campos vacíos antes de guardarlo.');
           }
@@ -290,7 +345,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     };
     loadWizardData();
     return () => { active = false; };
-  }, [docType, reloadKey, isProfileEditor, setErrorMsg, setSuccessMsg]);
+  }, [docType, reloadKey, isProfileEditor, draftId, draftAsCopy, resumeLatestLetter, openTargetOnMount, replaceDocumentPath, setErrorMsg, setSuccessMsg]);
 
   // Sincronizar estilo en localStorage y logs de control
   useEffect(() => {
@@ -434,11 +489,14 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
 
   };
 
-  const defaultTargetMatches = cvTargetRole.trim() === (profile?.target_role || '').trim()
-    && cvTargetJobDescription.trim() === (profile?.target_job_description || '').trim();
+  const savedTargetRole = profile?.target_role?.trim() || '';
+  const savedTargetDescription = profile?.target_job_description?.trim() || '';
+  const hasCompleteCvTarget = Boolean(cvTargetRole.trim() && cvTargetJobDescription.trim());
+  const defaultTargetMatches = cvTargetRole.trim() === savedTargetRole
+    && cvTargetJobDescription.trim() === savedTargetDescription;
 
   const handleSaveDefaultTarget = async () => {
-    if (!profile?.id || !cvTargetRole.trim() || defaultTargetMatches || savingDefaultTarget) return;
+    if (!profile?.id || !hasCompleteCvTarget || defaultTargetMatches || savingDefaultTarget) return;
 
     const target = {
       target_role: cvTargetRole.trim(),
@@ -482,6 +540,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     setSavingProfileData(true);
     try {
       await persistProfileData();
+      setPendingDocumentExit(null);
       setSuccessMsg('Perfil guardado.');
     } catch (err) {
       const issues = profileSaveIssues(err.details);
@@ -569,9 +628,26 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     else setCvSoftSkills(cvSoftSkills.filter(s => s !== skill));
   };
 
+  const getDocumentVisit = (type) => {
+    const visit = documentVisitRef?.current;
+    return visit?.type === type && visit.userId === profile?.id ? visit : null;
+  };
+
+  const recordPdfOperation = (type, startedAt, success, visit) => {
+    const finishedAt = performance.now();
+    recordDocumentOperation(profile?.id, `${type}_pdf`, startedAt, success, false, finishedAt);
+    if (!success || !visit || visit !== documentVisitRef?.current) return;
+    const preparation = completeDocumentVisit(visit);
+    if (preparation) {
+      recordDocumentOperation(preparation.userId, `${type}_preparation`, preparation.startedAt, true, preparation.regeneration, finishedAt);
+    }
+  };
+
   // GENERAR CV POR IA LLAMANDO A NUESTRO SERVIDOR NODE/EXPRESS (Backend)
   const handleGenerateCvAi = async () => {
     if (cvActionInProgress) return;
+    const startedAt = performance.now();
+    const visit = getDocumentVisit('cv');
     const previousNarrative = finalCvData ? cvNarrative(finalCvData, visibleSections) : null;
     const { candidate, preservedContent } = prepareCvGeneration(currentEditorData(), finalCvData, visibleSections);
     setCvStep(4);
@@ -624,11 +700,13 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
             ? 'CV regenerado. El resumen y las viñetas quedaron iguales.'
             : 'CV regenerado. Revisa la nueva redacción en la vista previa.');
         }
+        completedGenerationRef.current = { userId: profile.id, type: 'cv', startedAt, regeneration: Boolean(previousNarrative), visit };
       } else {
         throw new Error(data.error || 'Error generando CV con la IA');
       }
 
     } catch (err) {
+      recordDocumentOperation(profile?.id, 'cv', startedAt, false, Boolean(previousNarrative));
       console.error('Error generando CV en wizard:', err);
       setErrorMsg(mapError(err));
     } finally {
@@ -664,6 +742,8 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   // DESCARGAR PDF USANDO UTILIDAD UNIFICADA
   const handleDownloadPdf = async () => {
     if (!finalCvData || cvActionInProgress) return;
+    const startedAt = performance.now();
+    const visit = getDocumentVisit('cv');
     setDownloadingCv(true);
     setErrorMsg('');
     setSuccessMsg('');
@@ -675,6 +755,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         .replace(/[^\w.-]/g, '');
 
       await exportToPdf('cv-sheet-a4-canvas', fileName);
+      recordPdfOperation('cv', startedAt, true, visit);
 
       if ((!cvId && !copySourceTitle) || (cvId && !hasUnsavedChanges)) {
         try {
@@ -684,6 +765,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         }
       }
     } catch (err) {
+      recordPdfOperation('cv', startedAt, false, visit);
       console.error('Error descargando PDF:', err);
       const errMsg = err.code === 'DOM_NOT_FOUND'
         ? 'Error: El elemento visual del CV no se encuentra renderizado en el DOM.'
@@ -698,7 +780,10 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   // LÓGICA DE CARTAS DE PRESENTACIÓN
   // ==========================================
   const handleGenerateLetterAi = async () => {
-    if (!jobDescription.trim() || generatingLetter) return;
+    if (!jobDescription.trim() || letterActionInProgress) return;
+    const startedAt = performance.now();
+    const visit = getDocumentVisit('letter');
+    const regeneration = Boolean(letterContent.trim());
     setGeneratingLetter(true);
     setLetterProgressStep('Analizando perfil y vacante...');
     setErrorMsg('');
@@ -721,6 +806,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     try {
       const data = await apiRequest('/letter-generate', 'POST', {
         profileId: profile.id,
+        persist: false,
         company,
         targetRole,
         jobDescription,
@@ -729,27 +815,16 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
 
       if (data.success && typeof data.letterContent === 'string' && data.letterContent.trim()) {
         setLetterContent(data.letterContent);
-        setLetterId(data.letterId);
+        setGeneratedLetterContext(letterContextSnapshot({ company, targetRole, jobDescription, tone }));
+        setHasUnpersistedLetter(true);
         setJobOfferText(`Empresa: ${company || 'No especificada'}\nPuesto Objetivo: ${targetRole || 'No especificado'}\nDescripción de la Vacante: ${jobDescription}\nTono deseado: ${tone}`);
-        if (data.letterId) setSavedLetterSnapshot(JSON.stringify({ content: data.letterContent, company, targetRole, jobDescription, tone }));
-
-        if (data.warning) {
-          setErrorMsg(data.warning);
-        }
-
-        // Recargar historial si se guardó con éxito
-        if (data.letterId) {
-          try {
-            const refreshed = await loadUserSnapshot(profile.id);
-            setPastLetters(refreshed.letters || []);
-          } catch {
-            setSuccessMsg('La carta se guardó. No se pudo refrescar el listado; puedes abrirla desde Mis borradores.');
-          }
-        }
+        setSuccessMsg('Revisa el resultado y guárdalo como borrador.');
+        completedGenerationRef.current = { userId: profile.id, type: 'letter', startedAt, regeneration, visit };
       } else {
         throw new Error(data.error || 'La IA no devolvió una carta válida. Se conserva el texto anterior.');
       }
     } catch (err) {
+      recordDocumentOperation(profile?.id, 'letter', startedAt, false, regeneration);
       console.error('Error redactando carta:', err);
       if (err.code === 'LETTER_SAVE_FAILED' || err.code === 'DB_SCHEMA_MISMATCH') {
         setErrorMsg('No se pudo guardar la carta. Verifica que la base de datos tenga las columnas requeridas.');
@@ -772,7 +847,9 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   };
 
   const handleDownloadLetterPdf = async () => {
-    if (!letterContent || downloadingLetter) return;
+    if (!letterContent.trim() || letterActionInProgress) return;
+    const startedAt = performance.now();
+    const visit = getDocumentVisit('letter');
     setDownloadingLetter(true);
     setErrorMsg('');
     try {
@@ -783,17 +860,17 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         .replace(/[^\w.-]/g, '');
 
       await exportToPdf('letter-sheet-a4-canvas', fileName);
+      recordPdfOperation('letter', startedAt, true, visit);
 
-      // Actualizar estado a 'downloaded' en la BD
-      if (letterId) {
+      if (letterId && !hasUnsavedLetterChanges) {
         try {
-          await apiRequest(`/letter/${letterId}`, 'PUT', { status: 'downloaded', letter_content: letterContent, company, target_role: targetRole, job_description: jobDescription, tone });
-          setSavedLetterSnapshot(JSON.stringify({ content: letterContent, company, targetRole, jobDescription, tone }));
+          await apiRequest(`/letter/${letterId}`, 'PUT', { status: 'downloaded' });
         } catch {
-          setSuccessMsg('Se inició la descarga del PDF, pero no se pudo actualizar su estado. Puedes volver a guardar el borrador.');
+          setSuccessMsg('Se inició la descarga del PDF, pero no se pudo actualizar su estado.');
         }
       }
     } catch (err) {
+      recordPdfOperation('letter', startedAt, false, visit);
       console.error('Error descargando PDF de carta:', err);
       const errMsg = err.code === 'DOM_NOT_FOUND'
         ? 'Error: El elemento visual de la carta no se encuentra renderizado en el DOM.'
@@ -824,27 +901,88 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     };
     setters[field](value);
   };
-  const cvActionInProgress = generatingCv || downloadingCv || savingCvDraft;
+
+  const saveCvItemToProfile = async (item, confirmed) => {
+    if (!profile?.id || savingCvProfileItem.current) return;
+    const record = item.record;
+    const study = record && {
+      institution: record.institution ?? '', degree: record.degree ?? '',
+      start_date: record.start_date ?? '', end_date: record.end_date ?? '',
+    };
+    const id = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(record?.id) ? record.id : undefined;
+    const payload = study ? { kind: 'study', id, study, confirmed } : item;
+    savingCvProfileItem.current = true;
+    setSavingToProfile(true);
+    try {
+      const result = await apiRequest(`/profile/${profile.id}/cv-items`, 'POST', payload);
+      if (result.status === 'review') {
+        const { id: currentId, ...current } = result.current;
+        const describe = (entry) => `${entry.degree}, ${entry.institution} (${entry.start_date} a ${entry.end_date || 'en curso'})`;
+        showConfirm({
+          title: 'Actualizar estudio en Mi perfil',
+          message: `Guardado en Mi perfil · ${describe(current)}\nDesde este CV · ${describe(study)}`,
+          confirmLabel: 'Actualizar estudio',
+          variant: 'info',
+          onConfirm: () => void saveCvItemToProfile(item, { id: currentId, study: current }),
+        });
+      } else if (result.status === 'stale' || result.status === 'duplicate') {
+        toast.warning(result.status === 'stale'
+          ? 'El perfil cambió durante el guardado. Vuelve a intentarlo.'
+          : 'Hay varios estudios que coinciden. Revísalos en Mi perfil.');
+      } else if (result.status === 'saved' || result.status === 'unchanged') {
+        if (study && result.id && record.id !== result.id) {
+          setFinalCvData((document) => {
+            const entries = document?.academic_background ?? document?.education;
+            if (!entries || !entries.includes(record)) return document;
+            return applyManualCvEdits(document, {
+              academic_background: entries.map((entry) => entry === record ? { ...entry, id: result.id } : entry),
+            });
+          });
+          setHasUnpersistedCv(true);
+        }
+        toast.success(result.status === 'saved' ? 'Guardado en Mi perfil.' : 'Este dato ya está en Mi perfil.');
+      } else {
+        toast.error('No se pudo confirmar el guardado en Mi perfil.');
+      }
+    } catch (error) {
+      toast.error(error.message || 'No se pudo guardar en Mi perfil.');
+    } finally {
+      savingCvProfileItem.current = false;
+      setSavingToProfile(false);
+    }
+  };
+
+  const cvActionInProgress = generatingCv || downloadingCv || savingCvDraft || savingToProfile;
+  const letterActionInProgress = generatingLetter || downloadingLetter || savingLetterDraft;
+  const canUseSavedTargetInLetter = savedTargetRole && savedTargetDescription
+    && (targetRole.trim() !== savedTargetRole || jobDescription.trim() !== savedTargetDescription);
   const generatedTargetRole = finalCvData?.personal_info?.target_role ?? finalCvData?.target_role ?? finalCvData?.headline ?? '';
   const needsCvRegeneration = Boolean(finalCvData) && (
     cvTargetRole.trim() !== String(generatedTargetRole).trim()
     || cvTargetJobDescription.trim() !== String(finalCvData.target_job_description ?? '').trim()
   );
 
-  const letterSnapshot = JSON.stringify({ content: letterContent, company, targetRole, jobDescription, tone });
+  const letterSnapshot = { content: letterContent, company, targetRole, jobDescription, tone };
+  const hasLetterText = Boolean(letterContent.trim());
+  const hasLetterResult = Boolean(letterContent || letterId || draftAsCopy || hasUnpersistedLetter);
+  const needsLetterRegeneration = hasLetterText
+    && generatedLetterContext !== letterContextSnapshot({ company, targetRole, jobDescription, tone });
+  const isManualLetterCopy = !hasUnpersistedLetter && Boolean(letterId || draftAsCopy)
+    && hasLetterText && letterContent.trim() !== savedLetterSnapshot?.content.trim() && !needsLetterRegeneration;
+  const canSaveLetterDraft = hasLetterText && !needsLetterRegeneration && (hasUnpersistedLetter || isManualLetterCopy);
+  const hasUnsavedLetterChanges = hasUnpersistedLetter
+    || (Boolean(savedLetterSnapshot) && JSON.stringify(letterSnapshot) !== JSON.stringify(savedLetterSnapshot));
   const hasUnsavedChanges = !loading && !loadError && (docType === 'letter'
-    ? Boolean(savedLetterSnapshot) && letterSnapshot !== savedLetterSnapshot
+    ? hasUnsavedLetterChanges
     : hasChanges() || (!isProfileEditor && (hasUnpersistedCv || JSON.stringify(currentCvTheme()) !== JSON.stringify(savedTheme))));
-  const isCvEditor = docType === 'cv' && !isProfileEditor;
   useEffect(() => {
     if (!hasUnsavedChanges) return;
     return protectUnsavedChanges(window, (path) => {
-      if (!isCvEditor) return window.confirm('Tienes cambios sin guardar. Si sales, se perderán. Pulsa Cancelar para continuar editando y guardarlos.');
-      if (confirmedCvExit.current === path) return true;
-      setPendingCvExit(path);
+      if (confirmedDocumentExit.current === path) return true;
+      setPendingDocumentExit(path);
       return false;
     });
-  }, [hasUnsavedChanges, isCvEditor]);
+  }, [hasUnsavedChanges]);
 
   // PERSISTENCIA DE BORRADORES
   const persistCurrentCv = async (status, saveAsCopy = false) => {
@@ -866,6 +1004,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     setLastSavedSnapshot(editor);
     setSavedTheme(cvStyle);
     setHasUnpersistedCv(false);
+    replaceDocumentPath?.(cvDraftPath(data.cv.id));
   };
 
   const handleSaveCvDraft = async (saveAsCopy = false) => {
@@ -875,7 +1014,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     setSuccessMsg('');
     try {
       await persistCurrentCv('draft', saveAsCopy);
-      setSuccessMsg(saveAsCopy || copySourceTitle ? 'Copia guardada en Mis borradores.' : 'CV guardado en Mis borradores.');
+      toast.success(saveAsCopy || copySourceTitle ? 'Copia guardada en Mis borradores.' : 'CV guardado en Mis borradores.');
     } catch (err) {
       console.error(err);
       setErrorMsg(mapError(err));
@@ -885,14 +1024,14 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
   };
 
   const canSaveCvBeforeExit = Boolean(finalCvData) && !needsCvRegeneration;
-  const finishCvExit = () => {
-    if (!pendingCvExit) return;
-    confirmedCvExit.current = pendingCvExit;
-    setPendingCvExit(null);
+  const finishDocumentExit = () => {
+    if (!pendingDocumentExit) return;
+    confirmedDocumentExit.current = pendingDocumentExit;
+    setPendingDocumentExit(null);
     try {
-      navigateTo(pendingCvExit);
+      navigateTo(pendingDocumentExit);
     } finally {
-      confirmedCvExit.current = null;
+      confirmedDocumentExit.current = null;
     }
   };
 
@@ -902,7 +1041,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     try {
       await persistCurrentCv('draft');
       toast.success('CV guardado en Mis borradores.');
-      finishCvExit();
+      finishDocumentExit();
     } catch (error) {
       toast.error(mapError(error));
     } finally {
@@ -910,50 +1049,33 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
     }
   };
 
-  const handleSaveLetterDraft = async () => {
+  const handleSaveLetterDraft = async (exitAfterSave = false) => {
+    if (!canSaveLetterDraft || letterActionInProgress) return;
+    setSavingLetterDraft(true);
     setErrorMsg('');
     setSuccessMsg('');
     try {
-      if (letterId) {
-        const data = await apiRequest(`/letter/${letterId}`, 'PUT', { 
-          status: 'draft',
-          letter_content: letterContent,
-          job_offer_text: jobOfferText, company, target_role: targetRole,
-          job_description: jobDescription, tone
-        });
-        if (data.success) {
-          setSavedLetterSnapshot(letterSnapshot);
-          setSuccessMsg('¡Carta de presentación guardada como borrador en la base de datos!');
-        } else {
-          throw new Error(data.error || 'No se pudo actualizar el estado de la carta.');
-        }
-      } else {
-        // Fallback: Crear el registro en la base de datos como borrador (Tarea 9)
-        const defaultTitle = `Carta para ${company || targetRole || 'Vacante'}`;
-        const data = await apiRequest('/letter-save', 'POST', {
-          profileId: profile.id,
-          jobOfferText: jobOfferText || `Empresa: ${company || 'No especificada'}\nPuesto Objetivo: ${targetRole || 'No especificado'}\nDescripción de la Vacante: ${jobDescription}\nTono deseado: ${tone || 'profesional'}`,
-          letterContent: letterContent,
-          documentTitle: defaultTitle,
-          status: 'draft',
-          company: company || null,
-          targetRole: targetRole || null,
-          jobDescription: jobDescription || null,
-          tone: tone || null
-        });
-
-        if (data.success && data.letterId) {
-          setSavedLetterSnapshot(letterSnapshot);
-          setLetterId(data.letterId);
-          setSuccessMsg('¡Carta de presentación guardada como borrador en la base de datos!');
-          
-          // Recargar historial
-          const refreshed = await loadUserSnapshot(profile.id);
-          setPastLetters(refreshed.letters || []);
-        } else {
-          throw new Error(data.error || 'No se pudo guardar la carta como borrador.');
-        }
-      }
+      const defaultTitle = targetRole.trim() && company.trim()
+        ? `Carta para ${targetRole.trim()} en ${company.trim()}`
+        : `Carta para ${company.trim() || targetRole.trim() || 'Vacante'}`;
+      const data = await apiRequest('/letter-save', 'POST', {
+        profileId: profile.id,
+        jobOfferText,
+        letterContent,
+        documentTitle: isManualLetterCopy ? `${defaultTitle} · Copia` : defaultTitle,
+        status: 'draft',
+        company: company || null,
+        targetRole: targetRole || null,
+        jobDescription: jobDescription || null,
+        tone: tone || null
+      });
+      if (!data.success || !data.letterId) throw new Error(data.error || 'No se pudo guardar la carta como borrador.');
+      setSavedLetterSnapshot(letterSnapshot);
+      setLetterId(data.letterId);
+      setHasUnpersistedLetter(false);
+      toast.success(isManualLetterCopy ? 'Copia guardada en Mis borradores.' : 'Carta guardada en Mis borradores.');
+      if (exitAfterSave) finishDocumentExit();
+      else replaceDocumentPath?.(letterDraftPath(data.letterId));
     } catch (err) {
       console.error(err);
       if (err.code === 'LETTER_SAVE_FAILED' || err.code === 'DB_SCHEMA_MISMATCH') {
@@ -963,6 +1085,9 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
       } else {
         setErrorMsg(mapError(err));
       }
+      if (exitAfterSave) toast.error('No se pudo guardar la carta. Tus cambios siguen aquí.');
+    } finally {
+      setSavingLetterDraft(false);
     }
   };
 
@@ -973,8 +1098,6 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         className="bg-white text-slate-900 shadow-lg p-12 font-serif text-left shrink-0 text-justify"
         style={{
           fontFamily: 'Georgia, Cambria, "Times New Roman", Times, serif',
-          // Ancho A4 real (210mm): html2pdf exporta dentro de un contenedor de
-          // 210mm y un ancho menor deja franja blanca a la derecha del PDF.
           width: '210mm',
           minHeight: '277mm',
           boxSizing: 'border-box',
@@ -987,27 +1110,6 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         </div>
       </div>
     );
-  };
-
-  const handleDeleteLetter = (id) => {
-    showConfirm({
-      title: '¿Eliminar carta de presentación?',
-      message: '¿Estás seguro de que deseas eliminar esta carta de presentación permanentemente?',
-      onConfirm: async () => {
-        try {
-          await apiRequest(`/letter/${id}`, 'DELETE');
-          
-          toast.success('Carta de presentación eliminada correctamente.');
-          setPastLetters(pastLetters.filter(l => l.id !== id));
-          if (id === letterId) {
-            applyLetterDocument({ target_role: profile?.target_role, job_description: profile?.target_job_description });
-          }
-        } catch (err) {
-          console.error('Error al eliminar carta:', err);
-          toast.error(mapError(err));
-        }
-      }
-    });
   };
 
   if (loading) {
@@ -1088,7 +1190,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         rows={10}
         value={cvTargetJobDescription}
         onChange={(e) => setCvTargetJobDescription(e.target.value)}
-        placeholder="Pega las funciones y los requisitos de la vacante."
+        placeholder="Escribe o pega las funciones y los requisitos del puesto."
         className="w-full resize-y whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white supports-[field-sizing:content]:field-sizing-content supports-[field-sizing:content]:min-h-[calc(10lh+1.5rem+2px)] supports-[field-sizing:content]:resize-none"
       />
     </>
@@ -1109,22 +1211,26 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
       </div>
     </div>
   );
+  const canSaveBeforeExit = !isProfileEditor && (docType === 'letter' ? canSaveLetterDraft : canSaveCvBeforeExit);
+  const saveDocumentBeforeExit = () => docType === 'letter' ? handleSaveLetterDraft(true) : saveCvBeforeExit();
 
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <ConfirmDialog
-        open={Boolean(pendingCvExit)}
-        title="Tu CV tiene cambios sin guardar"
-        message={canSaveCvBeforeExit
+        open={Boolean(pendingDocumentExit)}
+        title={isProfileEditor ? 'Tu perfil tiene cambios sin guardar' : docType === 'letter' ? 'Tu carta tiene cambios sin guardar' : 'Tu CV tiene cambios sin guardar'}
+        message={canSaveBeforeExit
           ? 'Guarda esta versión como borrador para continuar después, o sal sin guardar.'
-          : 'Puedes seguir revisando el CV o salir sin guardar estos cambios.'}
-        confirmLabel={canSaveCvBeforeExit ? copySourceTitle ? 'Guardar copia y salir' : cvId ? 'Guardar cambios y salir' : 'Guardar borrador y salir' : 'Salir sin guardar'}
+          : docType === 'letter' && letterContent.trim()
+            ? 'Regenera la carta para guardar una nueva versión como borrador.'
+            : 'Puedes seguir editando o salir sin guardar estos cambios.'}
+        confirmLabel={canSaveBeforeExit ? (docType === 'letter' ? isManualLetterCopy : copySourceTitle) ? 'Guardar copia y salir' : docType === 'cv' && cvId ? 'Guardar cambios y salir' : 'Guardar borrador y salir' : 'Salir sin guardar'}
         cancelLabel="Seguir aquí"
-        variant={canSaveCvBeforeExit ? 'info' : 'warning'}
-        loading={cvActionInProgress}
-        onCancel={() => setPendingCvExit(null)}
-        onConfirm={canSaveCvBeforeExit ? saveCvBeforeExit : finishCvExit}
-        alternateAction={canSaveCvBeforeExit ? { label: 'Salir sin guardar', onClick: finishCvExit } : undefined}
+        variant={canSaveBeforeExit ? 'info' : 'warning'}
+        loading={isProfileEditor ? savingProfileData : docType === 'letter' ? letterActionInProgress : cvActionInProgress}
+        onCancel={() => setPendingDocumentExit(null)}
+        onConfirm={canSaveBeforeExit ? saveDocumentBeforeExit : finishDocumentExit}
+        alternateAction={canSaveBeforeExit ? { label: 'Salir sin guardar', onClick: finishDocumentExit } : undefined}
       />
       
       {errorMsg && (
@@ -1238,6 +1344,17 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
               {isProfileEditor && <button type="button" onClick={() => navigateTo('/profile/view')} className="border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-xs font-bold cursor-pointer">Volver a mi perfil</button>}
               {!isProfileEditor && (
                 <>
+                  {cvStep === 4 && finalCvData && (
+                    <button
+                      type="button"
+                      onClick={handleDownloadPdf}
+                      disabled={cvActionInProgress || needsCvRegeneration}
+                      className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-indigo-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Download aria-hidden="true" className="h-4 w-4" />
+                      {downloadingCv ? 'Preparando PDF…' : 'Descargar PDF'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleGenerateCvAi}
@@ -1318,6 +1435,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
               open={showImportModal}
               onClose={() => setShowImportModal(false)}
               onParsed={applyParsedCv}
+              onMeasured={(startedAt, success) => recordDocumentOperation(profile?.id, 'profile_import', startedAt, success, false)}
             />
           )}
 
@@ -1525,7 +1643,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                             onClick={addEducationItem}
                             className="bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 text-indigo-650 dark:text-indigo-400 text-[10px] font-bold px-3 py-1.5 rounded-xl cursor-pointer transition-all flex items-center gap-1"
                           >
-                            <Plus className="h-3.5 w-3.5" /> Agregar título
+                            <Plus className="h-3.5 w-3.5" /> Agregar estudio
                           </button>
                         </div>
 
@@ -1552,36 +1670,49 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                                   />
                                 </div>
                                 <div>
-                                  <label className="block text-slate-500 dark:text-slate-455 text-[9px] font-bold uppercase mb-0.5">Título / Grado obtenido</label>
+                                  <label htmlFor={`study-${index}-degree`} className="block text-slate-500 dark:text-slate-455 text-[9px] font-bold uppercase mb-0.5">Carrera o programa de estudios</label>
                                   <input 
+                                    id={`study-${index}-degree`}
                                     type="text" 
                                     value={edu.degree} 
+                                    placeholder="Ejemplo: Desarrollo de Software"
                                     {...requiredProfileInput(edu.degree)}
                                     onChange={(e) => handleEducationItemChange(index, 'degree', e.target.value)}
                                     className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
                                   />
                                 </div>
-                                <div>
-                                  <label className="block text-slate-500 dark:text-slate-455 text-[9px] font-bold uppercase mb-0.5">Fecha Inicio</label>
-                                  <input 
-                                    type="text" 
-                                    value={edu.start_date} 
-                                    {...requiredProfileInput(edu.start_date)}
-                                    onChange={(e) => handleEducationItemChange(index, 'start_date', e.target.value)}
-                                    placeholder="AAAA-MM-DD o Año"
-                                    className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-slate-500 dark:text-slate-455 text-[9px] font-bold uppercase mb-0.5">Fecha Fin (Vacio si continúa)</label>
-                                  <input 
-                                    type="text" 
-                                    value={edu.end_date || ''} 
-                                    onChange={(e) => handleEducationItemChange(index, 'end_date', e.target.value)}
-                                    placeholder="AAAA-MM-DD o Año"
-                                    className="w-full bg-white dark:bg-slate-850 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-indigo-400"
-                                  />
-                                </div>
+                                {[
+                                  { field: 'start_date', label: 'Fecha de inicio', required: true },
+                                  { field: 'end_date', label: 'Fecha de fin (vacía si continúa)', required: false },
+                                ].map(({ field, label, required }) => {
+                                  const savedDate = edu[field] ?? '';
+                                  const isCalendarDate = /^\d{4}-\d{2}-\d{2}$/.test(savedDate)
+                                    && new Date(savedDate).toJSON()?.slice(0, 10) === savedDate;
+                                  const inputId = `study-${index}-${field}`;
+                                  return (
+                                    <div key={field} className="min-w-0">
+                                      <label htmlFor={inputId} className="mb-0.5 block text-[9px] font-bold uppercase text-slate-500 dark:text-slate-455">{label}</label>
+                                      <input
+                                        id={inputId}
+                                        type="date"
+                                        value={isCalendarDate ? savedDate : ''}
+                                        {...(required ? requiredProfileInput(savedDate) : {})}
+                                        onChange={(e) => handleEducationItemChange(index, field, e.target.value)}
+                                        className="w-full min-w-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-850 dark:text-white dark:[color-scheme:dark]"
+                                      />
+                                      {savedDate && !isCalendarDate && (
+                                        <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
+                                          <span>Fecha guardada: {savedDate}</span>
+                                          {!required && (
+                                            <button type="button" className="cursor-pointer underline" onClick={() => handleEducationItemChange(index, field, '')}>
+                                              Quitar fecha de fin
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           ))}
@@ -1711,13 +1842,15 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
 
                   <div className="space-y-2">
                     {jobDescriptionInput}
-                    {cvTargetRole.trim() && (defaultTargetMatches ? (
-                      <p className="text-xs text-slate-500 dark:text-slate-400">Puesto predeterminado para cartas y entrevistas.</p>
+                    {!hasCompleteCvTarget ? (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Completa el puesto y su descripción para guardarlos para cartas y entrevistas.</p>
+                    ) : defaultTargetMatches ? (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Puesto y descripción guardados para cartas y entrevistas.</p>
                     ) : (
                       <button type="button" onClick={handleSaveDefaultTarget} disabled={savingDefaultTarget} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-slate-700 dark:text-indigo-300 dark:hover:bg-slate-800 cursor-pointer disabled:opacity-50">
-                        {savingDefaultTarget ? 'Guardando…' : 'Usar también en cartas y entrevistas'}
+                        {savingDefaultTarget ? 'Guardando…' : 'Guardar puesto para cartas y entrevistas'}
                       </button>
-                    ))}
+                    )}
                   </div>
 
                   </div>
@@ -1915,10 +2048,6 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                                 Guardar como copia
                               </button>
                             )}
-                            <button type="button" onClick={handleDownloadPdf} disabled={cvActionInProgress || needsCvRegeneration} className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-indigo-700 cursor-pointer disabled:opacity-50">
-                              <Download aria-hidden="true" className="h-4 w-4" />
-                              {downloadingCv ? 'Preparando PDF…' : 'Descargar PDF'}
-                            </button>
                           </>
                         )}
                       </div>
@@ -1928,6 +2057,7 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                       {showCvContentEditor && finalCvData && (
                         <fieldset disabled={cvActionInProgress} className="min-w-0">
                           <CvContentEditor document={buildCurrentCvDocument()} visibleSections={visibleSections} onChange={editCvContent}
+                            onSaveToProfile={saveCvItemToProfile} savingToProfile={savingToProfile}
                             onContactChange={editCvContact} onVisibilityChange={(key, visible) => setVisibleSections((current) => ({ ...current, [key]: visible }))} />
                         </fieldset>
                       )}
@@ -1958,16 +2088,21 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
         <div className="mx-auto w-full max-w-[1600px] space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
 
-            {/* Izquierda: Formulario e Historial Estructurado */}
+            {/* Izquierda: Formulario de la carta */}
             <div className="lg:col-span-5 space-y-6">
               
               {/* Input Oferta Estructurado */}
               <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
-                  <Mail className="h-4.5 w-4.5 text-indigo-600" />
-                  Nueva carta de presentación
-                </h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wide flex items-center gap-1.5">
+                    <Mail className="h-4.5 w-4.5 text-indigo-600" />
+                    {letterContent ? 'Carta de presentación' : 'Nueva carta de presentación'}
+                  </h3>
+                </div>
                 <p className="text-[10px] text-slate-400">Genera cartas de presentación adaptadas a las exigencias corporativas. Ingresa los datos del puesto para alinear tu perfil con la vacante.</p>
+                {draftAsCopy && !letterId && (
+                  <p className="text-xs text-slate-500">Estás usando la última carta como base.</p>
+                )}
                 
                 <div className="space-y-3">
                   <div>
@@ -1975,35 +2110,56 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                     <input
                       type="text"
                       value={company}
+                      disabled={letterActionInProgress}
                       onChange={(e) => setCompany(e.target.value)}
                       placeholder="ej: TechCorp"
                       className="w-full bg-slate-50 border border-slate-200 text-slate-900 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-1">Puesto objetivo</label>
+                    <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+                      <label htmlFor="letter-target-role" className="text-slate-500 text-[9px] font-bold uppercase tracking-wider">Puesto objetivo para esta carta</label>
+                      {canUseSavedTargetInLetter && (
+                        <button
+                          type="button"
+                          disabled={letterActionInProgress}
+                          onClick={() => {
+                            setTargetRole(savedTargetRole);
+                            setJobDescription(savedTargetDescription);
+                          }}
+                          className="cursor-pointer text-xs font-semibold text-indigo-700 hover:underline dark:text-indigo-300 disabled:opacity-50"
+                        >
+                          Usar puesto guardado
+                        </button>
+                      )}
+                    </div>
                     <input
+                      id="letter-target-role"
                       type="text"
                       value={targetRole}
+                      disabled={letterActionInProgress}
                       onChange={(e) => setTargetRole(e.target.value)}
                       placeholder="ej: Desarrollador React Junior"
                       className="w-full bg-slate-50 border border-slate-200 text-slate-900 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white"
                     />
                   </div>
                   <div>
-                    <label className="block text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-1">Descripción de la vacante</label>
+                    <label htmlFor="letter-job-description" className="block text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-1">Descripción de la vacante</label>
                     <textarea
-                      rows={4}
+                      id="letter-job-description"
+                      rows={10}
                       value={jobDescription}
+                      disabled={letterActionInProgress}
                       onChange={(e) => setJobDescription(e.target.value)}
                       placeholder="Buscamos desarrollador frontend junior con conocimientos en React, Tailwind y Git..."
-                      className="w-full bg-slate-50 border border-slate-200 text-slate-900 rounded-xl p-3 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white"
+                      className="w-full resize-y whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white supports-[field-sizing:content]:field-sizing-content supports-[field-sizing:content]:min-h-[calc(10lh+1.5rem+2px)] supports-[field-sizing:content]:resize-none"
                     />
                   </div>
                   <div>
                     <label className="block text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-1">Tono de la carta</label>
                     <select
                       value={tone}
+                      disabled={letterActionInProgress}
                       onChange={(e) => setTone(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 text-slate-950 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-indigo-500 focus:bg-white font-semibold"
                     >
@@ -2022,59 +2178,12 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                 ) : (
                   <button
                     onClick={handleGenerateLetterAi}
-                    disabled={!jobDescription.trim()}
+                    disabled={!jobDescription.trim() || letterActionInProgress}
                     className="w-full bg-indigo-650 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-40 cursor-pointer"
                   >
-                    Redactar Carta con IA
+                    {letterContent ? 'Regenerar carta con IA' : 'Generar carta con IA'}
                   </button>
                 )}
-              </div>
-
-              {/* Historial */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4">
-                <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wide">Cartas Anteriores</h4>
-                <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
-                  {pastLetters.map((l) => (
-                    <div
-                      key={l.id}
-                      className="w-full flex items-center justify-between bg-slate-50 border border-slate-150 rounded-xl p-2.5 transition-all hover:border-indigo-400/40 text-xs gap-2 group"
-                    >
-                      <button
-                        type="button"
-                        onClick={() => applyLetterDocument(l)}
-                        className="flex-1 text-left font-semibold text-slate-700 hover:text-indigo-650 truncate cursor-pointer"
-                      >
-                        <div className="font-bold text-slate-900 truncate">
-                          {l.document_title || (l.company ? `${l.company}` : 'Carta de presentación')}
-                        </div>
-                        {l.target_role && (
-                          <div className="text-[9px] text-slate-400 truncate">
-                            {l.target_role}
-                          </div>
-                        )}
-                      </button>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {l.status && (
-                          <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${
-                            l.status === 'draft' ? 'bg-amber-50 text-amber-600 border border-amber-100' :
-                            l.status === 'downloaded' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' :
-                            'bg-indigo-50 text-indigo-600 border border-indigo-100'
-                          }`}>
-                            {l.status === 'draft' ? 'Borrador' : l.status === 'downloaded' ? 'Descargado' : 'Generado'}
-                          </span>
-                        )}
-                        <Trash2 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteLetter(l.id);
-                          }}
-                          className="h-3.5 w-3.5 text-slate-400 hover:text-red-500 cursor-pointer transition-colors opacity-0 group-hover:opacity-100"
-                        />
-                      </div>
-                    </div>
-                  ))}
-                  {pastLetters.length === 0 && <p className="text-center text-slate-400 text-[10px] py-4">Aún no tienes cartas guardadas.</p>}
-                </div>
               </div>
 
             </div>
@@ -2091,21 +2200,22 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                     </p>
                   </div>
                 </div>
-              ) : letterContent ? (
+              ) : hasLetterResult ? (
                 <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex-1 flex flex-col space-y-4">
                   <div className="flex justify-between items-center pb-2 border-b border-slate-100">
                     <span className="text-[10px] text-slate-400 font-bold uppercase">Resultado de Redacción (Editable)</span>
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={handleCopyLetter}
-                        className="bg-slate-100 hover:bg-indigo-650 hover:text-white text-slate-600 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer"
+                        disabled={!hasLetterText}
+                        className="bg-slate-100 hover:bg-indigo-650 hover:text-white text-slate-600 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer disabled:opacity-50"
                       >
                         {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
                         {copied ? 'Copiada' : 'Copiar'}
                       </button>
                       <button
                         onClick={handleDownloadLetterPdf}
-                        disabled={downloadingLetter}
+                        disabled={letterActionInProgress || !hasLetterText}
                         className="bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer disabled:opacity-50"
                       >
                         {downloadingLetter ? (
@@ -2121,25 +2231,39 @@ export default function Documents({ initialDocType = 'select', navigateTo, mode 
                         )}
                       </button>
                       <button
-                        onClick={handleSaveLetterDraft}
-                        className="bg-indigo-55/60 hover:bg-indigo-650 hover:text-white text-indigo-650 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer"
+                        onClick={() => handleSaveLetterDraft()}
+                        disabled={letterActionInProgress || !canSaveLetterDraft}
+                        className="bg-indigo-55/60 hover:bg-indigo-650 hover:text-white text-indigo-650 text-[10px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-all duration-200 cursor-pointer disabled:opacity-50"
                       >
-                        Guardar como borrador
+                        {savingLetterDraft ? 'Guardando…' : isManualLetterCopy ? 'Guardar como copia' : 'Guardar borrador'}
                       </button>
                     </div>
                   </div>
                   
+                  {needsLetterRegeneration && (
+                    <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                      Cambiaste los datos de la vacante. Puedes descargar el texto que ves. Para guardarlo con los datos nuevos, pulsa «Regenerar carta con IA».
+                    </p>
+                  )}
+                  {hasLetterText && !needsLetterRegeneration && !hasUnpersistedLetter && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{isManualLetterCopy
+                      ? 'Al guardar la copia, conservarás la carta original.'
+                      : 'Edita el texto para guardar una copia.'}</p>
+                  )}
+                  {!hasLetterText && <p className="text-xs text-slate-500 dark:text-slate-400">Escribe el texto de la carta para guardarla o descargarla.</p>}
                   <textarea
+                    aria-label="Texto de la carta"
                     value={letterContent}
+                    disabled={letterActionInProgress}
                     onChange={(e) => setLetterContent(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200/60 p-5 rounded-xl text-slate-700 font-serif text-xs md:text-sm leading-relaxed whitespace-pre-wrap flex-1 min-h-[350px] resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-justify"
+                    className="w-full bg-slate-50 border border-slate-200/60 p-5 rounded-xl text-slate-700 font-serif text-xs md:text-sm leading-relaxed whitespace-pre-wrap flex-1 min-h-[420px] lg:min-h-[clamp(460px,65dvh,680px)] resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-justify"
                   />
                 </div>
               ) : (
                 <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center text-slate-400 flex-1 flex flex-col items-center justify-center min-h-[380px] shadow-sm">
                   <Mail className="h-8 w-8 text-slate-300 mb-3" />
                   <p className="text-xs leading-relaxed max-w-xs">
-                    Rellena la vacante laboral a la izquierda y presiona "Redactar Carta con IA" para visualizar el documento formal aquí.
+                    Completa la descripción de la vacante y pulsa «Generar carta con IA» para revisar el resultado aquí.
                   </p>
                 </div>
               )}

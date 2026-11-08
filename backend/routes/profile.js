@@ -4,7 +4,8 @@ import { requireAuth } from '../lib/authMiddleware.js';
 import { parseCvRaw } from '../services/cvService.js';
 import { importedCvToProfile } from '../services/cvImportData.js';
 import { extractCvText } from '../lib/fileTextExtractor.js';
-import { fullProfileUpdateSchema, profileUpdateSchema } from '../validators/profileValidator.js';
+import { cvProfileItemSchema, fullProfileUpdateSchema } from '../validators/profileValidator.js';
+import { saveCvSkillToProfile, saveCvStudyToProfile } from '../services/cvProfileItemService.js';
 
 const router = Router();
 
@@ -103,6 +104,25 @@ router.put('/profile/:userId', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[BACKEND PUT /profile/:userId] Error:', error);
     return res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+router.post('/profile/:userId/cv-items', requireAuth, async (req, res) => {
+  const parsed = cvProfileItemSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const error = req.body?.kind === 'study'
+      ? 'Revisa la institución, el título y las fechas del estudio.'
+      : 'Escribe una habilidad de hasta 100 caracteres.';
+    return res.status(400).json({ error });
+  }
+
+  try {
+    const item = parsed.data;
+    const save = item.kind === 'study' ? saveCvStudyToProfile : saveCvSkillToProfile;
+    return res.json(await save(req.db, req.user.id, item));
+  } catch (error) {
+    console.error('[/profile/cv-items] Error:', error.code || error.name);
+    return res.status(500).json({ error: 'No se pudo guardar el dato en Mi perfil. Vuelve a intentarlo.' });
   }
 });
 

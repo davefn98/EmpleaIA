@@ -114,6 +114,29 @@ const workSchema = z.object({
   achievements: z.array(z.string().trim().min(1).max(500)).max(100).optional(),
 }).strict();
 
+const cvStudySchema = z.object({
+  institution: requiredText,
+  degree: requiredText,
+  start_date: dateText.pipe(z.string().date()),
+  end_date: dateText.transform((value) => value || null),
+}).strict().refine((study) => !study.end_date || study.end_date >= study.start_date, {
+  message: 'La fecha de fin debe ser igual o posterior a la fecha de inicio.',
+});
+
+export const cvProfileItemSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('study'),
+    id: z.string().uuid().optional(),
+    study: cvStudySchema,
+    confirmed: z.object({ id: z.string().uuid(), study: cvStudySchema }).strict().optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('skill'),
+    type: z.enum(['technical', 'soft']),
+    name: z.string().trim().min(1).max(100),
+  }).strict(),
+]);
+
 export const fullProfileUpdateSchema = z.object({
   profile: profileUpdateSchema.extend({
     contact_email: z.string().trim().email().max(320).or(z.literal('')).optional(),

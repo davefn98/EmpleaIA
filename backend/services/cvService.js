@@ -183,6 +183,7 @@ function buildSupportedHeadline(userInputData, technicalSkills, categoryOrder) {
 
 function sourceAcademicRecord(record) {
   return {
+    ...(record.id && { id: record.id }),
     institution: text(record.institution),
     degree:      text(record.degree),
     start_date:  text(record.start_date),

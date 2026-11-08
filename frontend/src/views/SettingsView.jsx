@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Sparkles, Key, CheckCircle2, AlertCircle, Loader2, Save, Trash2, Cpu, User, Shield, Info, Download, Volume2, Play, Power } from 'lucide-react';
 import { apiRequest } from '../utils/api';
-import { supabase } from '../utils/supabaseClient';
+import { clearClosedAccountSession, supabase } from '../utils/supabaseClient';
 import { useNotification } from '../components/common/notificationContext';
 import { mapError } from '../utils/errorMapper';
 import { getSpanishVoices, pickVoiceByPreference, VOICE_URI_KEY, VOICE_PREF_KEY } from '../utils/interviewVoice';
+import { AvisoDeDatosDialog } from './AvisoDeDatos';
 
 const PROVIDER_MODELS = {
   openai: [
@@ -51,21 +52,24 @@ const PROVIDERS = [
 
 const VOICE_TEST_PHRASE = 'Hola, soy tu entrevistadora virtual de EmpleaIA. Así sonará mi voz durante la simulación.';
 
-const settingsTheme = '[--settings-bg-app:#f8fafc] [--settings-bg-surface:#ffffff] [--settings-bg-elevated:#f8fafc] [--settings-bg-hover:#eef2ff] [--settings-bg-input:#ffffff] [--settings-border:#cbd5e1] [--settings-border-subtle:#e2e8f0] [--settings-accent:#4f46e5] [--settings-accent-hover:#4338ca] [--settings-accent-soft:rgba(79,70,229,0.10)] [--settings-text:#0f172a] [--settings-text-secondary:#475569] [--settings-text-muted:#64748b] [--settings-success:#047857] [--settings-success-soft:rgba(4,120,87,0.10)] [--settings-warning:#b45309] [--settings-warning-soft:rgba(180,83,9,0.12)] [--settings-danger:#be123c] [--settings-danger-hover:#e11d48] [--settings-danger-soft:rgba(190,18,60,0.10)] [--settings-card-shadow:0_18px_40px_-30px_rgba(15,23,42,0.35)] dark:[--settings-bg-app:#0b1426] dark:[--settings-bg-surface:#172338] dark:[--settings-bg-elevated:#1d2b43] dark:[--settings-bg-hover:#24344f] dark:[--settings-bg-input:#101b2f] dark:[--settings-border:#30415f] dark:[--settings-border-subtle:#263753] dark:[--settings-accent:#5b46f5] dark:[--settings-accent-hover:#6f5cff] dark:[--settings-accent-soft:rgba(91,70,245,0.14)] dark:[--settings-text:#f3f6ff] dark:[--settings-text-secondary:#a9b6cc] dark:[--settings-text-muted:#74839d] dark:[--settings-success:#18b981] dark:[--settings-success-soft:rgba(24,185,129,0.13)] dark:[--settings-warning:#f5b942] dark:[--settings-warning-soft:rgba(245,185,66,0.13)] dark:[--settings-danger:#f05d78] dark:[--settings-danger-hover:#ff7890] dark:[--settings-danger-soft:rgba(240,93,120,0.13)] dark:[--settings-card-shadow:0_20px_50px_-32px_rgba(2,6,23,0.95)]';
+const settingsTheme = '[--settings-bg-app:#f8fafc] [--settings-bg-surface:#ffffff] [--settings-bg-elevated:#f8fafc] [--settings-bg-hover:var(--accent-soft)] [--settings-bg-input:#ffffff] [--settings-border:#cbd5e1] [--settings-border-subtle:#e2e8f0] [--settings-accent:var(--accent-primary)] [--settings-accent-hover:var(--accent-hover)] [--settings-accent-soft:var(--accent-soft)] [--settings-text:#0f172a] [--settings-text-secondary:#475569] [--settings-text-muted:#64748b] [--settings-success:#047857] [--settings-success-soft:rgba(4,120,87,0.10)] [--settings-warning:#b45309] [--settings-warning-soft:rgba(180,83,9,0.12)] [--settings-danger:#be123c] [--settings-danger-hover:#e11d48] [--settings-danger-soft:rgba(190,18,60,0.10)] [--settings-card-shadow:0_18px_40px_-30px_rgba(15,23,42,0.35)] dark:[--settings-bg-app:var(--bg-app)] dark:[--settings-bg-surface:var(--bg-card)] dark:[--settings-bg-elevated:var(--bg-sidebar)] dark:[--settings-bg-hover:var(--color-slate-805)] dark:[--settings-bg-input:var(--bg-input)] dark:[--settings-border:var(--border-color)] dark:[--settings-border-subtle:var(--dk-border)] dark:[--settings-accent:var(--color-indigo-600)] dark:[--settings-accent-hover:var(--accent-text)] dark:[--settings-accent-soft:var(--accent-soft)] dark:[--settings-text:var(--text-primary)] dark:[--settings-text-secondary:var(--text-secondary)] dark:[--settings-text-muted:var(--text-muted)] dark:[--settings-success:#18b981] dark:[--settings-success-soft:rgba(24,185,129,0.13)] dark:[--settings-warning:#f5b942] dark:[--settings-warning-soft:rgba(245,185,66,0.13)] dark:[--settings-danger:#f05d78] dark:[--settings-danger-hover:#ff7890] dark:[--settings-danger-soft:rgba(240,93,120,0.13)] dark:[--settings-card-shadow:0_20px_50px_-32px_rgba(2,6,23,0.95)]';
 const settingsCard = 'rounded-2xl border border-[var(--settings-border-subtle)] bg-[var(--settings-bg-surface)] text-[var(--settings-text)] shadow-[var(--settings-card-shadow)]';
 const settingsSectionTitle = 'text-xs font-black text-[var(--settings-text-muted)] uppercase tracking-widest border-b border-[var(--settings-border-subtle)] pb-2 flex items-center gap-2';
 const settingsLabel = 'text-[10px] font-black text-[var(--settings-text-secondary)] uppercase tracking-wider';
 
-export default function SettingsView({ user, profile }) {
+export default function SettingsView({ user, profile, onAccountClosed }) {
   const { toast, showConfirm } = useNotification();
   const [allCredentials, setAllCredentials] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorCode, setErrorCode] = useState(null);
 
   // Privacidad y datos (HU09 / HU10)
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   // Form state
   const [apiKey, setApiKey] = useState('');
@@ -293,24 +297,39 @@ export default function SettingsView({ user, profile }) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      setMessage({ type: 'success', text: 'Descarga de tus datos iniciada.' });
+      toast.success('Descarga de tus datos iniciada.');
     } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'No se pudieron exportar tus datos.' });
+      toast.error(err.message || 'No se pudieron exportar tus datos.');
     } finally {
       setExporting(false);
     }
   };
 
-  // HU10: eliminar todos mis datos y cerrar sesión
-  const handleDeleteAccount = async () => {
+  const handleDeleteAccount = async (event) => {
+    event.preventDefault();
+    if (deletingAccount || !deletePassword) return;
     setDeletingAccount(true);
+    setDeleteError('');
     try {
-      await apiRequest(`/account/${user.id}`, 'DELETE');
-      await supabase.auth.signOut(); // onAuthStateChange redirige al login
+      const result = await apiRequest(`/account/${user.id}/close`, 'DELETE', { password: deletePassword });
+      if (!result.success) throw new Error('No pudimos confirmar la eliminación de tu cuenta.');
     } catch (err) {
-      setMessage({ type: 'error', text: err.message || 'No se pudieron eliminar tus datos.' });
+      setDeleteError(err.message || 'No se pudo eliminar tu cuenta.');
       setDeletingAccount(false);
-      setConfirmDelete(false);
+      setDeletePassword('');
+      return;
+    }
+    setDeletePassword('');
+    try {
+      await clearClosedAccountSession();
+      localStorage.removeItem(`empleaia_generation_metrics_${user.id}`);
+      localStorage.removeItem('empleaia_historical_cv_data');
+      sessionStorage.removeItem(`empleaia_pi2_timer_${user.id}`);
+      sessionStorage.removeItem('empleaia_history_interview_id');
+    } catch {
+      // La confirmación depende del resultado del servidor.
+    } finally {
+      onAccountClosed();
     }
   };
 
@@ -765,10 +784,18 @@ export default function SettingsView({ user, profile }) {
           </div>
 
           {/* HU09: cómo se gestionan los datos */}
-          <div className="space-y-2 text-[11px] text-[var(--settings-text-secondary)] leading-relaxed">
-            <p><strong className="text-[var(--settings-text)]">Cómo se gestionan tus datos.</strong> Tu información (perfil, CVs, cartas y entrevistas) se almacena de forma segura en una base de datos gestionada (Supabase). El acceso está protegido con políticas de seguridad a nivel de fila (RLS): solo tú puedes leer o modificar tus registros.</p>
-            <p>Si conectas tu propia API key de IA, se guarda <strong className="text-[var(--settings-text)]">cifrada con AES-256-GCM</strong> y nunca se muestra ni se exporta en claro. El contenido que generas se procesa mediante modelos de lenguaje para producir tus documentos y retroalimentación.</p>
-            <p>Conforme a la Ley N.º 29733 de Protección de Datos Personales, puedes exportar o eliminar tus datos en cualquier momento.</p>
+          <div className="space-y-3 text-sm text-[var(--settings-text-secondary)] leading-relaxed">
+            <p><strong className="text-[var(--settings-text)]">Qué guardamos.</strong> Supabase gestiona el acceso a tu cuenta y almacena tu perfil, los CV y cartas guardados y el historial de entrevistas con tus respuestas y evaluaciones.</p>
+            <p><strong className="text-[var(--settings-text)]">Qué enviamos a la IA.</strong> Para importar un CV enviamos el texto extraído del archivo. Para generar un CV o una carta enviamos los datos del perfil usados en el documento y la información de la vacante. Para simular y evaluar entrevistas enviamos el contexto profesional, el puesto y las preguntas y respuestas de la sesión. Si usas la transcripción de EmpleaIA, enviamos el audio de tu respuesta a OpenAI.</p>
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              onClick={() => setPrivacyOpen(true)}
+              className="cursor-pointer font-semibold text-indigo-700 underline underline-offset-4 dark:text-indigo-300"
+            >
+              Política de privacidad
+            </button>
+            {privacyOpen && <AvisoDeDatosDialog onClose={() => setPrivacyOpen(false)} />}
           </div>
 
           {/* HU10: exportar / eliminar */}
@@ -782,40 +809,58 @@ export default function SettingsView({ user, profile }) {
               Exportar mis datos (JSON)
             </button>
 
-            {!confirmDelete ? (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                className="flex-1 px-4 py-2.5 bg-[var(--settings-bg-elevated)] border border-[color:rgba(240,93,120,0.34)] hover:border-[var(--settings-danger)] hover:bg-[var(--settings-danger-soft)] text-[var(--settings-danger)] text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
-              >
-                <Trash2 className="h-4 w-4" />
-                Eliminar mis datos
-              </button>
-            ) : (
-              <div className="flex-1 flex items-center gap-2">
-                <button
-                  onClick={handleDeleteAccount}
-                  disabled={deletingAccount}
-                  className="flex-1 px-4 py-2.5 bg-[var(--settings-danger)] hover:bg-[var(--settings-danger-hover)] text-white text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {deletingAccount ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                  Confirmar
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  disabled={deletingAccount}
-                  className="px-4 py-2.5 bg-[var(--settings-bg-elevated)] border border-[var(--settings-border-subtle)] text-[var(--settings-text-secondary)] text-xs font-bold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Cancelar
-                </button>
-              </div>
-            )}
+            <button
+              type="button"
+              aria-expanded={confirmDelete}
+              aria-controls="confirm-account-closure"
+              onClick={() => setConfirmDelete(true)}
+              className="flex-1 px-4 py-2.5 bg-[var(--settings-bg-elevated)] border border-[color:rgba(240,93,120,0.34)] hover:border-[var(--settings-danger)] hover:bg-[var(--settings-danger-soft)] text-[var(--settings-danger)] text-xs font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
+            >
+              <Trash2 className="h-4 w-4" />
+              Eliminar mi cuenta
+            </button>
           </div>
 
           {confirmDelete && (
-            <div className="bg-[var(--settings-danger-soft)] border border-[color:rgba(240,93,120,0.38)] rounded-xl p-3 flex items-start gap-2.5 text-[10px] text-[var(--settings-danger)] leading-normal">
-              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-              <span>Esto eliminará permanentemente tu perfil, CVs, cartas y entrevistas. La acción no se puede deshacer y se cerrará tu sesión.</span>
-            </div>
+            <form id="confirm-account-closure" onSubmit={handleDeleteAccount} className="space-y-3 rounded-xl border border-[color:rgba(240,93,120,0.38)] bg-[var(--settings-danger-soft)] p-4">
+              <p id="account-closure-warning" className="flex items-start gap-2 text-sm text-[var(--settings-text)]">
+                <AlertCircle aria-hidden="true" className="h-4 w-4 shrink-0 mt-0.5 text-[var(--settings-danger)]" />
+                <span>Se eliminarán tu cuenta y los datos vinculados en EmpleaIA, incluidos el perfil, los documentos, las entrevistas y tus registros del piloto. Esta acción es irreversible.</span>
+              </p>
+              <label htmlFor="delete-account-password" className="block text-xs font-bold">Contraseña actual</label>
+              <input
+                id="delete-account-password"
+                type="password"
+                autoComplete="current-password"
+                aria-describedby="account-closure-warning"
+                autoFocus
+                required
+                maxLength={1024}
+                disabled={deletingAccount}
+                value={deletePassword}
+                onChange={(event) => { setDeletePassword(event.target.value); setDeleteError(''); }}
+                className="w-full max-w-sm rounded-xl border border-[var(--settings-border)] bg-[var(--settings-bg-input)] px-3 py-2 text-sm"
+              />
+              {deleteError && <p role="alert" className="text-sm text-[var(--settings-danger)]">{deleteError}</p>}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={deletingAccount}
+                  onClick={() => { setConfirmDelete(false); setDeletePassword(''); setDeleteError(''); }}
+                  className="rounded-xl border border-[var(--settings-border)] bg-[var(--settings-bg-elevated)] px-4 py-2.5 text-xs font-bold disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={deletingAccount || !deletePassword}
+                  className="flex items-center gap-2 rounded-xl bg-rose-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {deletingAccount && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {deletingAccount ? 'Eliminando cuenta…' : 'Eliminar cuenta definitivamente'}
+                </button>
+              </div>
+            </form>
           )}
         </div>
 

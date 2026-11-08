@@ -3,12 +3,40 @@ import { supabase } from '../utils/supabaseClient';
 import { apiRequest } from '../utils/api';
 import { Clock, FileText, Mail, MessageSquare, Loader2, AlertCircle, X, ChevronRight, User, BookOpen, Briefcase, Award } from 'lucide-react';
 import InterviewConversationPanel from '../components/interview/InterviewConversationPanel';
+import { cvDraftPath } from '../utils/documentDraftRoute';
 
 const TYPE_LABEL = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
-const STATUS_LABEL = {active:'En curso',paused:'Pausada',completed:'Completada',completed_early:'Finalizada anticipadamente',pending_ai_feedback:'Análisis de IA pendiente',failed_to_start:'No iniciada',abandoned:'Descartada'};
+const STATUS_LABEL = {
+  active: 'En curso',
+  paused: 'Pausada',
+  completed: 'Finalizada',
+  completed_early: 'Finalizada anticipadamente',
+  pending_ai_feedback: 'Análisis de IA pendiente',
+  failed_to_start: 'No iniciada',
+  abandoned: 'Descartada',
+};
 const DIFFICULTY_LABEL = { basic: 'Básico', intermediate: 'Intermedio', advanced: 'Avanzado' };
 
-export default function ActivityHistory({ setActiveView }) {
+const isFinishedInterview = (status) => status === 'completed' || status === 'completed_early';
+
+function InterviewStatusBadge({ status }) {
+  let color = 'bg-slate-100 border-slate-200 text-slate-700 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300';
+  if (status === 'active') {
+    color = 'bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-950/40 dark:border-indigo-900 dark:text-indigo-300';
+  } else if (status === 'paused' || status === 'pending_ai_feedback') {
+    color = 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-300';
+  } else if (isFinishedInterview(status)) {
+    color = 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-900 dark:text-emerald-300';
+  }
+
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${color}`}>
+      {STATUS_LABEL[status] || 'Estado desconocido'}
+    </span>
+  );
+}
+
+export default function ActivityHistory({ setActiveView, navigateTo }) {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [error, setError] = useState('');
@@ -63,7 +91,6 @@ export default function ActivityHistory({ setActiveView }) {
             kind: 'interview',
             title: `Entrevista ${TYPE_LABEL[iv.interview_type] || iv.interview_type}`,
             date: iv.completed_at || iv.created_at,
-            meta: avg != null ? `Puntaje ${avg}/100` : (STATUS_LABEL[iv.status] || 'Sin evaluar'),
             status: iv.status,
             messages: sortedMsgs,
             sessionSummary: [...sortedMsgs].reverse().find(m=>m.evaluation?.session_summary)?.evaluation.session_summary || null,
@@ -113,15 +140,12 @@ export default function ActivityHistory({ setActiveView }) {
 
   const handleRestoreCv = (cvData, documentId) => {
     if (documentId) {
-      localStorage.setItem('empleaia_edit_cv_id', documentId);
       localStorage.removeItem('empleaia_historical_cv_data');
     } else {
       localStorage.setItem('empleaia_historical_cv_data', JSON.stringify(cvData));
     }
     setSelectedItem(null);
-    if (setActiveView) {
-      setActiveView('documents-cv');
-    }
+    navigateTo(documentId ? cvDraftPath(documentId) : '/documents/cv');
   };
 
   const visibleItems = items.filter((item) => filterType === 'all' || item.kind === filterType);
@@ -182,9 +206,18 @@ export default function ActivityHistory({ setActiveView }) {
                     <Icon className="h-4 w-4" />
                   </div>
                   <div className="min-w-0 flex-1 text-left">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                       <span className="text-[9px] font-black uppercase tracking-wide text-slate-400 dark:text-slate-500">{labelFor(ev.kind)}</span>
-                      {ev.meta && <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">· {ev.meta}</span>}
+                      {ev.kind === 'interview' && (
+                        <>
+                          <InterviewStatusBadge status={ev.status} />
+                          {ev.score !== null && (
+                            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">
+                              {isFinishedInterview(ev.status) ? 'Puntaje' : 'Puntaje parcial'} {ev.score}/100
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
                     <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{ev.title}</p>
                   </div>
@@ -401,13 +434,7 @@ export default function ActivityHistory({ setActiveView }) {
                   {/* Status Banner */}
                   <div className="flex justify-between items-center py-1.5 gap-3">
                     <span className="text-slate-450 font-bold uppercase tracking-wider text-[9px]">Estado de entrevista</span>
-                    <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full border ${
-                      ['completed','completed_early'].includes(selectedItem.status) 
-                        ? 'bg-emerald-50 border-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:border-emerald-900/50 dark:text-emerald-400' 
-                        : 'bg-amber-50 border-amber-100 text-amber-600 dark:bg-amber-950/40 dark:border-amber-900/50 dark:text-amber-400'
-                    }`}>
-                      {STATUS_LABEL[selectedItem.status] || 'Estado desconocido'}
-                    </span>
+                    <InterviewStatusBadge status={selectedItem.status} />
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 border-t border-slate-100 dark:border-slate-800/80 pt-3">
@@ -424,7 +451,9 @@ export default function ActivityHistory({ setActiveView }) {
                   {/* Avg Score */}
                   {selectedItem.score !== null && (
                     <div className="flex justify-between items-center border-t border-slate-100 dark:border-slate-800/80 pt-3">
-                      <span className="text-slate-450 font-bold uppercase tracking-wider text-[9px]">Calificación Promedio</span>
+                      <span className="text-slate-450 font-bold uppercase tracking-wider text-[9px]">
+                        {isFinishedInterview(selectedItem.status) ? 'Calificación promedio' : 'Calificación parcial'}
+                      </span>
                       <span className={`text-xs font-black px-2.5 py-0.5 rounded-lg border ${
                         selectedItem.score >= 80 ? 'bg-emerald-50 border-emerald-100 text-emerald-600 dark:bg-emerald-950/40 dark:border-emerald-900 dark:text-emerald-400' :
                         selectedItem.score >= 60 ? 'bg-amber-50 border-amber-100 text-amber-600 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-400' :

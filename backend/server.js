@@ -12,6 +12,7 @@ import profileRouter      from './routes/profile.js';
 import aiCredentialsRouter from './routes/aiCredentials.js';
 import accountRouter       from './routes/account.js';
 import userDataRouter       from './routes/userData.js';
+import documentPdfRouter    from './routes/documentPdf.js';
 import { swaggerUi, swaggerSpec } from './lib/swagger.js';
 import { aiLimiter } from './lib/rateLimiters.js';
 
@@ -37,6 +38,7 @@ app.use(cors({
 }));
 
 // Middleware para parsear cuerpos de solicitudes JSON
+app.use('/api', documentPdfRouter);
 app.use(express.json());
 
 // Ruta de estado básica para monitoreo

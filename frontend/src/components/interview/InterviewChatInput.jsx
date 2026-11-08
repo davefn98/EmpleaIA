@@ -22,6 +22,7 @@ export default function InterviewChatInput({
   isRecording,
   onToggleRecording,
   micDisabled = false,
+  questionPlayback = 'finished',
   showRecordingPanel,
   recordingSeconds,
   onPause,
@@ -37,6 +38,7 @@ export default function InterviewChatInput({
   showCompactLoader = false
 }) {
   const busy = Boolean(busyLabel);
+  const waitingForQuestion = questionPlayback === 'waiting';
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -53,21 +55,26 @@ export default function InterviewChatInput({
           <div className="flex items-center gap-3">
             <button
               onClick={onToggleRecording}
-              disabled={controlsDisabled || micDisabled}
+              disabled={controlsDisabled || micDisabled || waitingForQuestion}
               className={`h-14 w-14 rounded-2xl flex items-center justify-center border shadow-sm cursor-pointer transition-all ${isRecording
                 ? 'bg-rose-600 border-rose-600 text-white shadow-rose-600/20 hover:bg-rose-700'
                 : 'bg-indigo-600 border-indigo-600 text-white shadow-indigo-600/20 hover:bg-indigo-700'
               } disabled:opacity-40 disabled:cursor-not-allowed`}
-              title={micDisabled ? 'Micrófono no disponible. Responde por escrito.' : isRecording ? 'Detener dictado' : 'Responder por voz'}
+              title={micDisabled ? 'Micrófono no disponible. Responde por escrito.' : waitingForQuestion ? 'Espera a que termine la pregunta' : isRecording ? 'Detener dictado' : 'Responder por voz'}
             >
               {isRecording ? <Square className="h-5 w-5 shrink-0" /> : <Mic className="h-5 w-5 shrink-0" />}
             </button>
             <div>
               <span className="text-xs font-black text-slate-900 dark:text-white block">
-                {isRecording ? 'Te estoy escuchando' : autoVoiceEnabled ? 'Conversación por voz activa' : 'Activar conversación por voz'}
+                {waitingForQuestion ? 'Escucha la pregunta' : isRecording ? 'Te estoy escuchando' : 'Responder por voz'}
               </span>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                {micDisabled ? 'Micrófono no disponible. Usa la respuesta escrita.' : isRecording ? 'Habla con naturalidad. El silencio envía tu respuesta. Di «termina la entrevista» para cerrar.' : autoVoiceEnabled ? 'Escucharé automáticamente después de cada pregunta. Di «termina la entrevista» para cerrar.' : 'Activa el micrófono para continuar por voz o elige texto.'}
+                {micDisabled && 'Micrófono no disponible. Usa la respuesta escrita.'}
+                {!micDisabled && waitingForQuestion && 'El micrófono está apagado mientras se lee la pregunta.'}
+                {isRecording && 'Habla con naturalidad. El silencio envía tu respuesta. Di «termina la entrevista» para cerrar.'}
+                {!micDisabled && !waitingForQuestion && !isRecording && (questionPlayback === 'silent'
+                  ? 'Pulsa el micrófono cuando termines de leer la pregunta.'
+                  : autoVoiceEnabled ? 'Preparando el micrófono. Si el navegador te pide permiso, selecciona Permitir.' : 'Pulsa el micrófono cuando estés listo para responder.')}
               </p>
             </div>
           </div>

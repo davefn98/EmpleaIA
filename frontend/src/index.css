@@ -4,8 +4,19 @@
 
 @theme {
   /* Definir variables de colores personalizados para compatibilidad con Tailwind CSS v4 */
-  --color-indigo-650: #4338ca; /* Un tono índigo profundo premium (originalmente entre 600 y 700) */
-  --color-indigo-55: #eff6ff; /* Un tono índigo pastel suave para fondos */
+  --color-indigo-50: #f5f0ff;
+  --color-indigo-55: #f5f0ff;
+  --color-indigo-100: #ede5ff;
+  --color-indigo-200: #ded1ff;
+  --color-indigo-300: #c4b5fd;
+  --color-indigo-400: #ae96f8;
+  --color-indigo-500: #8b63e4;
+  --color-indigo-600: #673ed0;
+  --color-indigo-650: #5733b2;
+  --color-indigo-700: #4b2b9b;
+  --color-indigo-800: #402480;
+  --color-indigo-900: #332060;
+  --color-indigo-950: #251745;
   --color-rose-650: #be123c; /* Un rojo rosa elegante de buena visibilidad y contraste */
   --color-rose-50: #fff1f2;
   --color-rose-100: #ffe4e6;
@@ -30,9 +41,7 @@
 /* ========================================================= */
 /* SOPORTE GLOBAL DE MODO OSCURO (DARK MODE) OVERRIDES        */
 /*                                                            */
-/* Tokens del tema oscuro. Dark suave: sin negro puro ni      */
-/* blanco puro; superficies en tres niveles (fondo, shell,    */
-/* card) y bordes translúcidos para reducir ruido visual.     */
+/* Grafito usa distintos niveles de superficie y acento lila. */
 /* ========================================================= */
 :root {
   /* Light Mode Tokens */
@@ -41,44 +50,98 @@
   --bg-header:       rgba(255, 255, 255, 0.9);
   --bg-card:         #ffffff;
   --bg-input:        #f8fafc; /* slate-50 */
+  --bg-elevated:     #f8fafc;
+  --bg-field:        #ffffff;
   --text-primary:    #0f172a; /* slate-900 */
   --text-secondary:  #475569; /* slate-600 */
   --text-muted:      #94a3b8; /* slate-400 */
   --border-color:    rgba(226, 232, 240, 0.8); /* slate-200/80 */
-  --accent-primary:  #4f46e5; /* indigo-600 */
-  --accent-hover:    #4338ca; /* indigo-700 */
+  --accent-primary:  #5733b2;
+  --accent-hover:    #4b2b9b;
+  --accent-on-primary: #ffffff;
+  --accent-text:     #5733b2;
+  --accent-soft:     #efeafd;
 }
 
 .dark {
   color-scheme: dark;
-  background-color: #0f172a;
-  --dk-bg:           #0f172a;                     /* fondo general */
-  --dk-shell:        #111827;                     /* sidebar y header */
-  --dk-surface:      #1e293b;                     /* cards principales */
-  --dk-inset:        #111827;                     /* inputs y superficies hundidas */
-  --dk-border:       rgba(148, 163, 184, 0.18);   /* borde estándar */
-  --dk-border-soft:  rgba(148, 163, 184, 0.10);   /* divisores de tabla */
-  --dk-text:         #f8fafc;                     /* texto principal */
-  --dk-text-2:       #cbd5e1;                     /* texto secundario */
-  --dk-text-3:       #a3b1c6;                     /* secundario suave pero legible */
-  --dk-muted:        #94a3b8;                     /* muted / labels */
-  --dk-accent:       #a5b4fc;                     /* indigo-300: acento sobre oscuro */
-  --dk-accent-bg:    rgba(99, 102, 241, 0.16);    /* fondo de acento */
-  --dk-hover:        rgba(148, 163, 184, 0.10);   /* hover neutro */
-  --dk-hover-accent: rgba(99, 102, 241, 0.14);    /* hover con acento */
+  background-color: var(--bg-app);
+  --bg-app:          #17191e;
+  --bg-sidebar:      #1b1e24;
+  --bg-header:       #1b1e24;
+  --bg-card:         #22252c;
+  --bg-input:        #1b1e24;
+  --bg-elevated:     #22252c;
+  --bg-field:        #1b1e24;
+  --text-primary:    #f5f5f6;
+  --text-secondary:  #bdc1c9;
+  --text-muted:      #a1a6b0;
+  --border-color:    #50545f;
+  --accent-primary:  #c4b5fd;
+  --accent-hover:    #d8caff;
+  --accent-on-primary: #21143c;
+  --accent-text:     #c4b5fd;
+  --accent-soft:     #352858;
 
-  /* Dark Mode Tokens */
-  --bg-app:          #0f172a;
-  --bg-sidebar:      #111827;
-  --bg-header:       #1e293b;
-  --bg-card:         #1e293b;
-  --bg-input:        #111827;
-  --text-primary:    #f8fafc;
-  --text-secondary:  #cbd5e1;
-  --text-muted:      #94a3b8;
-  --border-color:    rgba(148, 163, 184, 0.18);
-  --accent-primary:  #6366f1;
-  --accent-hover:    #4f46e5;
+  /* Las utilidades Slate conservan su jerarquía con superficies de grafito. */
+  --color-slate-950: var(--bg-app);
+  --color-slate-900: var(--bg-sidebar);
+  --color-slate-850: #20232a;
+  --color-slate-805: #272b33;
+  --color-slate-800: var(--bg-card);
+  --color-slate-700: #383c45;
+  --color-slate-600: var(--border-color);
+  --color-slate-500: var(--text-muted);
+  --color-slate-400: var(--text-muted);
+  --color-slate-300: var(--text-secondary);
+  --color-slate-200: #d8dae0;
+  --color-slate-100: var(--text-primary);
+
+  --dk-bg:           var(--bg-app);
+  --dk-shell:        var(--bg-sidebar);
+  --dk-surface:      var(--bg-card);
+  --dk-inset:        var(--bg-input);
+  --dk-border:       rgba(161, 166, 176, 0.24);
+  --dk-border-soft:  rgba(161, 166, 176, 0.12);
+  --dk-text:         var(--text-primary);
+  --dk-text-2:       #d8dae0;
+  --dk-text-3:       var(--text-secondary);
+  --dk-muted:        var(--text-muted);
+  --dk-accent:       var(--accent-text);
+  --dk-accent-bg:    var(--accent-soft);
+  --dk-hover:        rgba(161, 166, 176, 0.12);
+  --dk-hover-accent: rgba(139, 99, 228, 0.15);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .625rem;
+  color: var(--text-primary);
+  font-size: 1.375rem;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -.05em;
+  white-space: nowrap;
+}
+
+.brand__mark {
+  display: grid;
+  place-items: center;
+  width: 2.375rem;
+  height: 2.375rem;
+  border-radius: .6875rem;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.brand__mark svg {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.brand__accent {
+  color: var(--accent-text);
 }
 
 /* Estilos de fondo y textos dinámicos dentro de la aplicación autenticada */
@@ -133,15 +196,6 @@
   color: var(--text-muted) !important;
 }
 
-/* Inputs, textareas y selects dentro del panel privado en modo oscuro */
-.auth-theme-container.dark input,
-.auth-theme-container.dark textarea,
-.auth-theme-container.dark select {
-  background-color: var(--bg-input) !important;
-  border-color: var(--border-color) !important;
-  color: var(--text-primary) !important;
-}
-
 .dark .bg-slate-50 {
   background-color: var(--dk-bg) !important;
 }
@@ -152,7 +206,7 @@
 }
 
 .dark .bg-white\/90 {
-  background-color: rgba(30, 41, 59, 0.9) !important;
+  background-color: color-mix(in srgb, var(--dk-surface) 90%, transparent) !important;
 }
 
 /* Chips y tracks neutros (tabs, cajas de icono, fondos slate suaves) */
@@ -162,12 +216,12 @@
 
 .dark .bg-slate-100\/50,
 .dark .bg-slate-100\/60 {
-  background-color: rgba(15, 23, 42, 0.5) !important;
+  background-color: color-mix(in srgb, var(--dk-inset) 50%, transparent) !important;
 }
 
 .dark .bg-indigo-50 {
   background-color: var(--dk-accent-bg) !important;
-  color: #c7d2fe !important; /* indigo-200 */
+  color: var(--dk-accent) !important;
   box-shadow: none !important;
 }
 
@@ -176,11 +230,11 @@
 .dark .bg-indigo-55\/60,
 .dark .bg-indigo-55\/70 {
   background-color: var(--dk-accent-bg) !important;
-  color: #c7d2fe !important;
+  color: var(--dk-accent) !important;
 }
 
 .dark .bg-indigo-100 {
-  background-color: rgba(99, 102, 241, 0.22) !important;
+  background-color: var(--dk-accent-bg) !important;
 }
 
 /* Sombra de cards más profunda y sutil sobre fondo oscuro */
@@ -197,19 +251,19 @@
 
 /* Iconos de barra de navegación activos */
 .dark .bg-white.text-indigo-700 {
-  background-color: rgba(99, 102, 241, 0.24) !important;
-  color: #c7d2fe !important;
+  background-color: var(--dk-accent-bg) !important;
+  color: var(--dk-accent) !important;
 }
 
 /* Anillo del ítem activo del sidebar */
 .dark .ring-indigo-200\/80 {
-  --tw-ring-color: rgba(99, 102, 241, 0.38) !important;
+  --tw-ring-color: color-mix(in srgb, var(--dk-accent) 38%, transparent) !important;
 }
 
 /* Tab activo (Todos / CVs / Cartas): resalta sin ser un botón blanco */
 .dark button.bg-white.text-indigo-650 {
-  background-color: rgba(99, 102, 241, 0.18) !important;
-  color: #c7d2fe !important;
+  background-color: var(--dk-accent-bg) !important;
+  color: var(--dk-accent) !important;
 }
 
 /* ---------- Hovers ---------- */
@@ -296,7 +350,7 @@
 }
 
 .dark .text-slate-300 {
-  color: #475569 !important; /* iconos decorativos de estados vacíos */
+  color: var(--text-secondary) !important;
 }
 
 .dark .text-indigo-650,
@@ -347,7 +401,7 @@
 /* Generado */
 .dark span.bg-indigo-50.text-indigo-700 {
   background-color: var(--dk-accent-bg) !important;
-  border-color: rgba(99, 102, 241, 0.40) !important;
+  border-color: color-mix(in srgb, var(--dk-accent) 40%, transparent) !important;
   color: var(--dk-accent) !important;
 }
 
@@ -408,9 +462,7 @@
 }
 
 /* ---------- Formularios, Inputs y Selects ---------- */
-.dark input,
-.dark textarea,
-.dark select {
+.dark .auth-theme-container :is(input, textarea, select) {
   background-color: var(--dk-inset) !important;
   color: var(--dk-text) !important;
   border-color: rgba(148, 163, 184, 0.22) !important;
@@ -418,42 +470,35 @@
 
 /* Gana a `.dark .border-slate-200` (mayor especificidad); sin esto el
    borde del buscador cae al borde estándar y el input se pierde. */
-.dark input.border-slate-200,
-.dark textarea.border-slate-200,
-.dark select.border-slate-200 {
+.dark .auth-theme-container :is(input, textarea, select).border-slate-200 {
   border-color: rgba(148, 163, 184, 0.26) !important;
 }
 
-.dark input::placeholder,
-.dark textarea::placeholder {
+.dark .auth-theme-container :is(input, textarea)::placeholder {
   color: var(--dk-muted) !important;
 }
 
-.dark input:focus,
-.dark textarea:focus,
-.dark select:focus {
-  border-color: #6366f1 !important; /* indigo-500 */
+.dark .auth-theme-container :is(input, textarea, select):focus {
+  border-color: var(--color-indigo-500) !important;
   background-color: var(--dk-inset) !important;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.18) !important;
+  box-shadow: 0 0 0 3px var(--dk-hover-accent) !important;
 }
 
 /* ---------- Cabecera y barra lateral (shell) ---------- */
 /* aside.bg-white: especificidad suficiente para ganarle a `.dark .bg-white`,
    si no el sidebar hereda el color de card y la card pierde separación. */
-.dark header,
-.dark aside,
-.dark aside.bg-white {
+.dark .auth-theme-container :is(header, aside) {
   background-color: var(--dk-shell) !important;
   border-color: var(--dk-border) !important;
 }
 
-.dark header {
-  background-color: rgba(17, 24, 39, 0.92) !important; /* respeta el backdrop-blur */
+.dark .auth-theme-container header {
+  background-color: color-mix(in srgb, var(--dk-shell) 92%, transparent) !important;
 }
 
 /* ---------- Previsualizaciones del CV/Carta ---------- */
 .dark .bg-slate-50.border.border-slate-200.rounded-xl.p-4.flex.justify-center {
-  background-color: #334155 !important;
+  background-color: var(--color-slate-700) !important;
 }
 
 /* Las hojas exportables se mantienen blancas para que la vista previa

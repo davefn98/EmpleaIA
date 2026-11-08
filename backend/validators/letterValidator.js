@@ -23,6 +23,7 @@ export const letterGenerateSchema = z
     tone:           z.string().optional(),
     document_title: z.string().optional(),
     status:         z.string().optional(),
+    persist:        z.boolean().optional(),
   })
   .refine(
     (data) => Boolean(data.jobOfferText) || Boolean(data.jobDescription),

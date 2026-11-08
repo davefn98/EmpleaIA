@@ -2,17 +2,27 @@
  * account.js — Gestión de datos personales del usuario (HU10, Ley 29733).
  *
  * - GET  /api/account/export/:userId : exporta TODOS los datos del usuario en JSON.
- * - DELETE /api/account/:userId      : elimina todos los datos del usuario.
+ * - DELETE /api/account/:userId/close : cierra la cuenta tras verificar su contraseña.
  *
- * Seguridad: requireAuth en todo; el cliente va con el token del usuario, así
- * que RLS garantiza que solo accede/borra sus propios datos. La API key cifrada
- * NUNCA se incluye en la exportación (solo la versión enmascarada).
+ * requireAuth comprueba la titularidad. La exportación usa RLS y solo incluye
+ * la versión enmascarada de las claves. El cierre usa Supabase Auth Admin.
  */
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import { createClient } from '@supabase/supabase-js';
 import { requireAuth } from '../lib/authMiddleware.js';
+import { supabaseAdmin } from '../lib/supabaseClient.js';
 
 const router = Router();
+const accountCloseLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  keyGenerator: (req) => req.user.id,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Hiciste varios intentos. Espera unos minutos y vuelve a intentarlo.' },
+});
 
 // GET /api/account/export/:userId — descarga JSON con todos los datos del usuario
 router.get('/account/export/:userId', requireAuth, async (req, res) => {
@@ -55,31 +65,50 @@ router.get('/account/export/:userId', requireAuth, async (req, res) => {
   }
 });
 
-// DELETE /api/account/:userId — elimina todos los datos del usuario
-// El borrado del perfil cascadea a educación, experiencia, CVs, cartas,
-// entrevistas y mensajes (FK on delete cascade). Las credenciales/preferencias
-// de IA cuelgan de auth.users, así que se borran explícitamente.
-router.delete('/account/:userId', requireAuth, async (req, res) => {
-  const db = req.db;
-  const userId = req.user.id;
+router.delete('/account/:userId/close', requireAuth, accountCloseLimiter, async (req, res) => {
+  const { id: userId, email } = req.user;
+  const { password } = req.body ?? {};
 
+  if (typeof password !== 'string' || !password || password.length > 1024) {
+    return res.status(400).json({ error: 'Escribe tu contraseña actual.' });
+  }
+  if (!supabaseAdmin || !email) {
+    return res.status(503).json({ error: 'El cierre de cuenta no está disponible en este momento.' });
+  }
+
+  // Esta sesión temporal verifica la contraseña sin modificar la sesión de la aplicación.
+  const verification = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+  let verifiedSession = false;
+  let closed = false;
   try {
-    await db.from('ai_provider_credentials').delete().eq('user_id', userId);
-    await db.from('ai_model_preferences').delete().eq('user_id', userId);
-
-    const { error } = await db.from('profiles').delete().eq('id', userId);
-    if (error) {
-      console.error('[/account delete] Error transaccional:', error.message);
-      return res.status(400).json({ error: 'No se pudieron eliminar tus datos.' });
+    const { data, error: verificationError } = await verification.auth.signInWithPassword({ email, password });
+    verifiedSession = Boolean(data?.session);
+    if (verificationError?.code === 'invalid_credentials' || (!verificationError && data?.user?.id !== userId)) {
+      return res.status(403).json({ error: 'La contraseña no es correcta. Vuelve a intentarlo.' });
+    }
+    if (verificationError || !verifiedSession) {
+      const limited = verificationError?.status === 429;
+      return res.status(limited ? 429 : 503).json({
+        error: 'No pudimos verificar tu contraseña. Espera unos minutos y vuelve a intentarlo.',
+      });
     }
 
-    return res.json({
-      success: true,
-      message: 'Tus datos personales fueron eliminados de EmpleaIA.'
-    });
+    // Las FK ON DELETE CASCADE eliminan los datos vinculados en la misma operación.
+    // Evitamos borrar el perfil primero para que un fallo de Auth no deje un cierre parcial.
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(userId, false);
+    if (error && error.code !== 'user_not_found') throw error;
+
+    closed = true;
+    return res.json({ success: true });
   } catch (err) {
-    console.error('[/account delete] Error:', err.message);
-    return res.status(500).json({ error: 'No se pudieron eliminar tus datos.' });
+    console.error('[/account close] Error:', err.code || err.status || err.name);
+    return res.status(502).json({ error: 'No pudimos confirmar la eliminación de tu cuenta. Vuelve a intentarlo.' });
+  } finally {
+    if (verifiedSession && !closed) {
+      await verification.auth.signOut({ scope: 'local' }).catch(() => {});
+    }
   }
 });
 

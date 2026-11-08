@@ -185,13 +185,17 @@ export function updateCvDocumentData(cvData, editor) {
   return next;
 }
 
-export function restoreLetterDocument(letter) {
+export function letterContextSnapshot({ company, targetRole, jobDescription, tone }) {
+  return JSON.stringify([company, targetRole, jobDescription, tone].map((value) => text(value).trim()));
+}
+
+export function restoreLetterDocument(letter, { asCopy = false } = {}) {
   const saved = object(letter);
   const offer = text(saved.job_offer_text);
   const field = (label) => offer.match(new RegExp(`(?:^|\\n)${label}:\\s*([^\\n]*)`))?.[1]?.trim() || '';
   const description = offer.match(/(?:^|\n)Descripción de la Vacante:\s*([\s\S]*?)(?=\nTono deseado:|$)/)?.[1]?.trim();
   return {
-    id: saved.id || null, content: text(saved.letter_content), jobOfferText: offer,
+    id: asCopy ? null : saved.id || null, content: text(saved.letter_content), jobOfferText: offer,
     company: text(saved.company ?? field('Empresa')),
     targetRole: text(saved.target_role ?? field('Puesto Objetivo')),
     jobDescription: text(saved.job_description ?? description ?? offer),

@@ -5,10 +5,11 @@ import { loadUserSnapshot } from '../utils/userDataApi';
 import { apiRequest, BACKEND_URL } from '../utils/api';
 import { mapError } from '../utils/errorMapper';
 import { useNotification } from '../components/common/notificationContext';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 import InterviewConversationPanel from '../components/interview/InterviewConversationPanel';
 import InterviewChatInput from '../components/interview/InterviewChatInput';
 import AiInterviewerAvatar from '../components/interview/AiInterviewerAvatar';
-import { restoreInterviewResponses, interviewAverageScore, resolveInterviewResponseMode } from '../utils/interviewSession';
+import { restoreInterviewResponses, interviewAverageScore, hasInterviewsToCompare, resolveInterviewResponseMode } from '../utils/interviewSession';
 import { pickBestSpanishVoice, pickVoiceByPreference, VOICE_URI_KEY, VOICE_PREF_KEY } from '../utils/interviewVoice';
 import {
   MessageSquare,
@@ -20,6 +21,7 @@ import {
   Pause,
   Play,
   Activity,
+  Mic,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -28,20 +30,39 @@ const MIN_RECORDING_SECONDS = 2;
 const MIN_AUDIO_BLOB_SIZE = 3000;
 const MAX_RECORDING_SECONDS = 120;
 const ANSWER_SECONDS = 120;
+const INTERVIEW_TYPE_LABELS = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
 
 const AUDIO_EMPTY_MESSAGE = 'No se detectó audio. Intenta hablar más cerca del micrófono o responde por escrito.';
 const AUDIO_TOO_SHORT_MESSAGE = 'Graba al menos 2 segundos para detectar tu voz o responde por escrito.';
+const MICROPHONE_BLOCKED_MESSAGE = 'Permite el micrófono en los permisos de este sitio y vuelve a intentarlo. También puedes responder por escrito.';
+const AVATAR_VARIANT_KEY = 'empleaia_avatar_variant';
+
+function InterviewerPicker({ value, onChange }) {
+  return (
+    <label className="relative flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+      Personaje
+      <select
+        aria-label="Personaje del entrevistador"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="rounded-lg border border-slate-200 bg-white p-1.5 dark:border-slate-600 dark:bg-slate-800"
+      >
+        <option value="woman">Ejecutiva</option>
+        <option value="man">Ejecutivo Clásico</option>
+      </select>
+    </label>
+  );
+}
 
 const stopStreamTracks = (stream) => {
   stream?.getTracks?.().forEach(track => track.stop());
 };
 
 const getPermissionErrorMessage = (err) => {
-  if (!err) return 'No se pudo acceder al dispositivo.';
-  if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') return 'Permiso denegado por el navegador.';
-  if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') return 'No se encontró un dispositivo disponible.';
-  if (err.name === 'NotReadableError') return 'El dispositivo está siendo usado por otra aplicación.';
-  return err.message || 'No se pudo acceder al dispositivo.';
+  if (err?.name === 'NotAllowedError') return MICROPHONE_BLOCKED_MESSAGE;
+  if (err?.name === 'NotFoundError') return 'No encontramos un micrófono. Conecta uno y vuelve a intentarlo o responde por escrito.';
+  if (err?.name === 'NotReadableError') return 'No pudimos usar el micrófono. Revisa si otra aplicación lo está usando o responde por escrito.';
+  return 'No pudimos activar el micrófono. Vuelve a intentarlo o responde por escrito.';
 };
 
 
@@ -49,6 +70,9 @@ export default function Interviews({ setActiveView }) {
   const { showConfirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [setupDialogDismissed, setSetupDialogDismissed] = useState(false);
+  const [canCompare, setCanCompare] = useState(false);
+  const [hasEducation, setHasEducation] = useState(false);
   const [sending, setSending] = useState(false);
   const [profile, setProfile] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -69,7 +93,7 @@ export default function Interviews({ setActiveView }) {
   const [completedEarly, setCompletedEarly] = useState(false);
 
   // Sesión de entrevista: reanudar / terminar / abandonar / check de dispositivos
-  const [activeInterview, setActiveInterview] = useState(null); // { interview, messages } en curso al entrar
+  const [pausedInterviews, setPausedInterviews] = useState([]);
   const [finishingInterview, setFinishingInterview] = useState(false);
   const [abandoning, setAbandoning] = useState(false);
 
@@ -96,7 +120,11 @@ export default function Interviews({ setActiveView }) {
   // Resultados finales
   const [finalScore, setFinalScore] = useState(null);
   const [aiOverallScore, setAiOverallScore] = useState(null);
-  const [avatarVariant, setAvatarVariant] = useState(() => localStorage.getItem('empleaia_avatar_variant') || 'woman');
+  const [avatarVariant, setAvatarVariant] = useState(() => localStorage.getItem(AVATAR_VARIANT_KEY) === 'man' ? 'man' : 'woman');
+  const selectAvatar = (variant) => {
+    setAvatarVariant(variant);
+    localStorage.setItem(AVATAR_VARIANT_KEY, variant);
+  };
   const [generalAnalysis, setGeneralAnalysis] = useState('');
   const [strengths, setStrengths] = useState([]);
   const [improvements, setImprovements] = useState([]);
@@ -120,10 +148,9 @@ export default function Interviews({ setActiveView }) {
   const [, setShowWebcam] = useState(false);
 
 
-  const [microphoneAvailable, setMicrophoneAvailable] = useState(null);
-
-
-  const [, setMicrophonePermissionError] = useState('');
+  const microphoneAvailable = Boolean(navigator.mediaDevices?.getUserMedia);
+  const [microphonePermission, setMicrophonePermission] = useState('checking');
+  const [prefersVoice, setPrefersVoice] = useState(null);
   const [availableVoices, setAvailableVoices] = useState([]);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState(() => localStorage.getItem(VOICE_URI_KEY) || '');
 
@@ -141,7 +168,9 @@ export default function Interviews({ setActiveView }) {
   const [isTextMode, setIsTextMode] = useState(false);
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [autoVoiceEnabled, setAutoVoiceEnabled] = useState(false);
-  const [questionReadComplete, setQuestionReadComplete] = useState(false);
+  const [questionPlayback, setQuestionPlayback] = useState('waiting');
+  const [silentQuestionId, setSilentQuestionId] = useState(null);
+  const questionId = chatMessages.at(-1)?.id;
   const sendAnswerRef = useRef(null);
   const recordingStartPendingRef = useRef(false);
   const readQuestionRef = useRef(null);
@@ -194,6 +223,15 @@ export default function Interviews({ setActiveView }) {
   },[interviewId,isTextMode]);
 
   const isAnalyzing = sending || isSavingAnswer || isTranscribing || isStopping || showProgressLoader;
+  const avatarIsAnalyzing = isAnalyzing || finishingInterview;
+  const avatarStatus = errorMsg ? 'error' : isPaused ? 'paused' : isAiSpeaking ? 'speaking'
+    : isRecording ? 'listening' : avatarIsAnalyzing ? 'analyzing' : isTextMode ? 'writing' : 'idle';
+
+  useEffect(() => {
+    if (!silentQuestionId) return;
+    const timer = window.setTimeout(() => setSilentQuestionId(null), 2200);
+    return () => window.clearTimeout(timer);
+  }, [silentQuestionId]);
 
   useEffect(() => {
     if (!isAnalyzing) {
@@ -226,12 +264,30 @@ export default function Interviews({ setActiveView }) {
   const microphoneStreamRef = useRef(null);
   const animationFrameRef = useRef(null);
 
-  // TB1 evalúa contenido: no carga modelos faciales ni solicita cámara/micrófono al entrar.
-  const requestInitialMediaPermissions = async () => {
-    setShowWebcam(false);
-    setMicrophoneAvailable(Boolean(navigator.mediaDevices?.getUserMedia));
-    if(!navigator.mediaDevices?.getUserMedia) setIsTextMode(true);
-  };
+  useEffect(() => {
+    if (!microphoneAvailable) return;
+
+    let permission;
+    let disposed = false;
+    const syncPermission = () => setMicrophonePermission(permission.state);
+
+    const checkPermission = async () => {
+      try {
+        permission = await navigator.permissions.query({ name: 'microphone' });
+        if (disposed) return;
+        syncPermission();
+        permission.addEventListener('change', syncPermission);
+      } catch {
+        if (!disposed) setMicrophonePermission('prompt');
+      }
+    };
+
+    checkPermission();
+    return () => {
+      disposed = true;
+      permission?.removeEventListener('change', syncPermission);
+    };
+  }, [microphoneAvailable]);
 
   const loadSpeechVoices = () => {
     if (!window.speechSynthesis) return;
@@ -275,15 +331,12 @@ export default function Interviews({ setActiveView }) {
 
       try {
         const snapshot = await loadUserSnapshot(session.user.id);
-        const pData = snapshot.profile;
-        if (!pData) {
-          // Carga exitosa pero sin fila de perfil: isProfileEmpty mostrará
-          // la card "Perfil Incompleto"; no es un error de carga.
-          return;
-        }
-        setProfile(pData);
-        const totalExp = (snapshot.work || []).length;
-        const totalEdu = (snapshot.academic || []).length;
+        setCanCompare(hasInterviewsToCompare(snapshot.interviews));
+        setPausedInterviews(snapshot.interviews.filter((interview) => interview.status === 'paused'));
+        setProfile(snapshot.profile);
+        setHasEducation(snapshot.academic.some((study) => study.institution?.trim() && study.degree?.trim()));
+        const totalExp = snapshot.work.length;
+        const totalEdu = snapshot.academic.length;
 
         let suggested = 'intermediate';
         if (totalExp === 0 && totalEdu <= 1) {
@@ -294,9 +347,6 @@ export default function Interviews({ setActiveView }) {
         setSuggestedDifficulty(suggested);
         setSelectedDifficulty(suggested);
 
-        // Cargar face-api preventivamente
-        requestInitialMediaPermissions();
-
         // Cargar entrevistas con feedback pendiente
         try {
           const pendingData = await apiRequest(`/interview/pending/${session.user.id}`, 'GET');
@@ -305,15 +355,6 @@ export default function Interviews({ setActiveView }) {
           console.warn('No se pudieron cargar entrevistas pendientes:', pendingErr.message);
         }
 
-        // Detectar una entrevista en curso para ofrecer reanudarla
-        try {
-          const activeData = await apiRequest(`/interview/resumable/${session.user.id}`, 'GET');
-          if (activeData.success && activeData.activeInterview) {
-            setActiveInterview({ interview: activeData.activeInterview, messages: activeData.messages || [] });
-          }
-        } catch (activeErr) {
-          console.warn('No se pudo consultar la entrevista en curso:', activeErr.message);
-        }
       } catch (err) {
         console.error('Error cargando perfil:', err);
         // Con sesión expirada api.js ya cerró sesión y App redirige al login.
@@ -344,21 +385,23 @@ export default function Interviews({ setActiveView }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey]);
 
-  // Solo se considera "perfil incompleto" cuando la carga fue exitosa;
-  // si hubo error de carga, profile es null por el fallo, no por estar vacío.
-  const isProfileEmpty = !profileLoadError && (!profile || !profile.first_name || !profile.career);
-
-  useEffect(() => {
-    if (!loading && isProfileEmpty) {
-      setErrorMsg('Para iniciar una entrevista personalizada, primero completa tu perfil profesional. Redirigiendo a Mi Perfil en 3s...');
-      const timer = setTimeout(() => {
-        if (typeof setActiveView === 'function') {
-          setActiveView('profile');
-        }
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [loading, isProfileEmpty, setActiveView]);
+  const missingName = !profile?.first_name?.trim();
+  const missingProfileContext = missingName || !hasEducation;
+  const hasTargetRole = Boolean(profile?.target_role?.trim());
+  const hasTargetDescription = Boolean(profile?.target_job_description?.trim());
+  const missingTarget = !hasTargetRole || !hasTargetDescription;
+  const needsInterviewSetup = missingProfileContext || missingTarget;
+  const needsMicrophoneChoice = microphoneAvailable && !needsInterviewSetup && microphonePermission === 'prompt' && prefersVoice === null;
+  const microphoneSetupPending = microphoneAvailable && (microphonePermission === 'checking' || needsMicrophoneChoice);
+  const startInText = !microphoneAvailable || microphonePermission === 'denied' || !(prefersVoice ?? (microphonePermission === 'granted'));
+  const newInterviewBlocked = starting || abandoning || needsInterviewSetup || microphoneSetupPending;
+  const targetRequirementMessage = !hasTargetRole && !hasTargetDescription
+    ? 'Faltan el puesto objetivo y su descripción.'
+    : !hasTargetRole ? 'Falta el puesto objetivo.' : 'Falta la descripción del puesto objetivo.';
+  const profileRequirementMessage = [
+    missingName && 'Escribe tu nombre en Datos y resumen.',
+    !hasEducation && 'En Mi perfil → Trayectoria, registra al menos un estudio que cursas o terminaste. Agrega la institución y la carrera.',
+  ].filter(Boolean).join(' ');
 
   // CONTROL DEL CONTEO DIGITAL DE LA ENTREVISTA (02:45)
   useEffect(() => {
@@ -403,6 +446,7 @@ export default function Interviews({ setActiveView }) {
 
   const cleanupInterviewSession = (clearResponses = true) => {
     setAutoVoiceEnabled(false);
+    readQuestionRef.current = null;
     stopSpeaking();
     ignorePendingCallbacksRef.current = true;
 
@@ -431,7 +475,6 @@ export default function Interviews({ setActiveView }) {
     
     // Opcionalmente borrar respuestas y mensajes (para descarte / abandono)
     if (clearResponses) {
-      setActiveInterview(null);
       setInterviewId(null);
       setCurrentQuestion('');
       setUserTextResponse('');
@@ -441,9 +484,7 @@ export default function Interviews({ setActiveView }) {
   };
 
   // LECTOR DE PREGUNTAS POR VOZ (HU03)
-  const speakQuestion = (text) => {
-    if (isMuted || !window.speechSynthesis) return;
-    stopSpeaking();
+  const speakQuestion = (text, completePlayback) => {
     const cleanText = text.replace(/[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF]/g, "");
     const utterance = new SpeechSynthesisUtterance(cleanText);
     currentUtteranceRef.current = utterance;
@@ -462,38 +503,45 @@ export default function Interviews({ setActiveView }) {
       utterance.lang = esVoice.lang || 'es-ES';
     }
 
-    utterance.onstart = () => {
-      setIsAiSpeaking(true);
-    };
-
-    utterance.onend = () => {
+    const finishPlayback = (status) => {
+      if (currentUtteranceRef.current !== utterance) return;
+      currentUtteranceRef.current = null;
       setIsAiSpeaking(false);
-      readQuestionRef.current = text;
-      setQuestionReadComplete(true);
+      completePlayback(status);
     };
 
-    utterance.onerror = () => {
-      setIsAiSpeaking(false);
-      readQuestionRef.current = text;
-      setQuestionReadComplete(true);
-    };
-
-    window.speechSynthesis.speak(utterance);
+    utterance.onend = () => finishPlayback('finished');
+    utterance.onerror = () => finishPlayback('silent');
+    setIsAiSpeaking(true);
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      finishPlayback('silent');
+    }
   };
 
   // Reproducir pregunta cuando cambia
   useEffect(() => {
-    if (intState === 'active' && currentQuestion && !isMuted) {
-      setQuestionReadComplete(false);
-      speakQuestion(currentQuestion);
-    } else if (isMuted) {
-      stopSpeaking();
-      readQuestionRef.current = currentQuestion;
-      setQuestionReadComplete(true);
+    if (intState !== 'active' || !currentQuestion) return;
+
+    stopSpeaking();
+    readQuestionRef.current = null;
+    setQuestionPlayback('waiting');
+
+    const completePlayback = (status) => {
+      readQuestionRef.current = { questionId, status };
+      setQuestionPlayback(status);
+      setSilentQuestionId(status === 'silent' ? questionId : null);
+    };
+
+    if (isMuted || !window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+      completePlayback('silent');
+    } else {
+      speakQuestion(currentQuestion, completePlayback);
     }
   // Lifecycle intentionally keyed to state; callbacks read current refs and must not restart media.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentQuestion, intState, isMuted]);
+  }, [currentQuestion, questionId, intState, isMuted]);
 
   // Detener de forma proactiva la voz, cámara y micrófonos cuando la entrevista deja de estar activa
   useEffect(() => {
@@ -531,6 +579,9 @@ export default function Interviews({ setActiveView }) {
       let finalTranscriptAccumulated = '';
 
       recognition.onstart = () => {
+        isRecordingRef.current = true;
+        setIsRecording(true);
+        setShowRecordingPanel(true);
         console.log("SpeechRecognition (local fallback) iniciado.");
       };
 
@@ -768,7 +819,10 @@ export default function Interviews({ setActiveView }) {
 
   // CONTROL DE GRABACIÓN DE AUDIO REAL CON DETECCION DE SILENCIO (Web Audio API)
   const startRecordingMedia = async () => {
-    if (recordingStartPendingRef.current || isRecordingRef.current || isSubmittingRef.current || ignorePendingCallbacksRef.current) return;
+    const playback = readQuestionRef.current;
+    const canCapture = () => playback === readQuestionRef.current && intStateRef.current === 'active'
+      && !isTextModeRef.current && !isPausedRef.current && !isSubmittingRef.current && !ignorePendingCallbacksRef.current;
+    if (!playback || playback.questionId !== questionId || !canCapture() || recordingStartPendingRef.current || isRecordingRef.current) return;
     recordingStartPendingRef.current = true;
     try {
       if (!microphoneAvailable) {
@@ -778,7 +832,6 @@ export default function Interviews({ setActiveView }) {
 
       setErrorMsg('');
       setMicError('');
-      stopSpeaking();
       setIsTranscribing(false);
       setTranscriptionFailed(false); // Reiniciamos el estado de fallo al volver a grabar
       
@@ -788,15 +841,15 @@ export default function Interviews({ setActiveView }) {
       setIsSilenceDetected(false);
       isSilenceDetectedRef.current = false;
 
-      setShowRecordingPanel(true);
       setRecordingSeconds(0);
       audioChunksRef.current = [];
-      recordingStartedAtRef.current = Date.now();
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!canCapture()) {
+        stopStreamTracks(stream);
+        return;
+      }
       microphoneStreamRef.current = stream;
-      isRecordingRef.current = true;
-      setIsRecording(true);
       console.log('[FRONTEND voice] Stream de micrófono abierto:', stream.getAudioTracks().map(track => ({
         label: track.label,
         enabled: track.enabled,
@@ -960,6 +1013,10 @@ export default function Interviews({ setActiveView }) {
       };
 
       mediaRecorder.start(250);
+      recordingStartedAtRef.current = Date.now();
+      isRecordingRef.current = true;
+      setIsRecording(true);
+      setShowRecordingPanel(true);
       lastRecorderStateRef.current = mediaRecorder.state;
 
       recordingTimerRef.current = setInterval(() => {
@@ -974,9 +1031,14 @@ export default function Interviews({ setActiveView }) {
       }, MAX_RECORDING_SECONDS * 1000);
 
     } catch (err) {
-      console.warn('[FRONTEND voice] Falló MediaRecorder. Iniciando fallback local con Web Speech API:', err);
-      setMicrophonePermissionError(getPermissionErrorMessage(err));
+      if (!canCapture()) return;
+      console.warn('[FRONTEND voice] Falló MediaRecorder:', err);
+      cleanupAudioContext();
       resetAudioFlowState();
+      if (['NotAllowedError', 'NotFoundError', 'NotReadableError'].includes(err.name)) {
+        activateTextFallbackForAudio(getPermissionErrorMessage(err));
+        return;
+      }
       startLocalSpeechRecognition();
     } finally {
       recordingStartPendingRef.current = false;
@@ -984,13 +1046,16 @@ export default function Interviews({ setActiveView }) {
   };
 
   const handleToggleTextMode = async () => {
-    setAutoVoiceEnabled(false);
+    const switchingToText = !isTextMode;
+    isTextModeRef.current = switchingToText;
+    setAutoVoiceEnabled(!switchingToText);
     if (isRecording) {
       await stopActiveRecording();
       setIsRecording(false);
       setShowRecordingPanel(false);
     }
-    setIsTextMode(prev => !prev);
+    setErrorMsg('');
+    setIsTextMode(switchingToText);
   };
 
   const toggleRecording = () => {
@@ -1006,18 +1071,17 @@ export default function Interviews({ setActiveView }) {
       ignorePendingCallbacksRef.current = false;
       setAutoVoiceEnabled(true);
       setIsTextMode(false);
-      if (!isAiSpeaking) startRecordingMedia();
+      startRecordingMedia();
     }
   };
 
-  // La primera pulsación autoriza la conversación continua en esta sesión.
-  // Se escucha tras la lectura; texto, pausa, navegación y errores la detienen.
+  // La escucha automática solo comienza cuando termina la lectura de la pregunta vigente.
   useEffect(() => {
-    if (isSubmittingRef.current || isStoppingRef.current || ignorePendingCallbacksRef.current || readQuestionRef.current !== currentQuestion || !autoVoiceEnabled || isTextMode || !questionReadComplete || isAiSpeaking || isRecording || isPaused || intState !== 'active' || sending || isAnalyzing || isTranscribing || isStopping || isSavingAnswer || errorMsg || !microphoneAvailable) return;
+    if (questionPlayback !== 'finished' || readQuestionRef.current?.status !== 'finished' || !autoVoiceEnabled || isRecording || isAnalyzing || errorMsg) return;
     startRecordingMedia();
   // Cada inicio usa las referencias vigentes y no reinicia medios en curso.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoVoiceEnabled, isTextMode, questionReadComplete, isAiSpeaking, isRecording, isPaused, intState, sending, isAnalyzing, isTranscribing, isStopping, isSavingAnswer, errorMsg, microphoneAvailable, currentQuestion]);
+  }, [questionPlayback, questionId, autoVoiceEnabled, isTextMode, isRecording, isPaused, intState, isAnalyzing, errorMsg]);
 
   useEffect(() => { timedOutQuestionRef.current = null; }, [currentQuestion]);
   useEffect(() => {
@@ -1027,26 +1091,8 @@ export default function Interviews({ setActiveView }) {
   }, [timeRemaining, intState, isPaused, isAiSpeaking, sending, isAnalyzing, currentQuestion]);
 
   // INICIAR ENTREVISTA
-  const missingTargetMessage = 'Completa el puesto objetivo y la descripción de la vacante en Personalización del CV. Luego pulsa «Usar también en cartas y entrevistas».';
-  const handleStartInterview = async (type, opts = {}) => {
-    if (activeInterview?.interview?.status === 'paused') {
-      setErrorMsg('Ya tienes una entrevista pausada. Reanúdala o descártala antes de iniciar una nueva.');
-      return;
-    }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    const user = session?.user;
-
-    if (!profile || !profile.first_name || !profile.career) {
-      setErrorMsg('Para iniciar una entrevista personalizada, primero completa tu perfil profesional. Redirigiendo a Mi Perfil en 3s...');
-      setTimeout(() => setActiveView?.('profile'), 3000);
-      return;
-    }
-    if (!profile.target_role?.trim() || !profile.target_job_description?.trim()) {
-      setErrorMsg(missingTargetMessage);
-      return;
-    }
-
+  const handleStartInterview = async (type) => {
+    if (newInterviewBlocked) return;
     setStarting(true);
     setErrorMsg('');
     ignorePendingCallbacksRef.current = false;
@@ -1060,18 +1106,16 @@ export default function Interviews({ setActiveView }) {
     setShowRecordingPanel(false);
     setIsRecording(false);
     setIsPaused(false);
-    const startInText = opts.responseMode === 'text' || microphoneAvailable === false;
     setIsTextMode(startInText);
-    // Comenzar es la acción explícita que inicia el modo de voz y su permiso.
     setAutoVoiceEnabled(!startInText);
     setShowWebcam(false);
 
     try {
       const data = await apiRequest('/interview/start', 'POST', {
-        profileId: profile?.id || user?.id,
+        profileId: profile?.id,
         interviewType: type,
         difficultyLevel: selectedDifficulty,
-        responseMode: opts.responseMode === 'text' || microphoneAvailable === false ? 'text' : 'voice'
+        responseMode: startInText ? 'text' : 'voice'
       });
 
       if (data.success) {
@@ -1089,10 +1133,9 @@ export default function Interviews({ setActiveView }) {
         setIntState('active');
       }
     } catch (err) {
-      const message = err.message || '';
-      if (message.includes('perfil') || message.includes('Perfil') || message.includes('Completa')) {
-        setErrorMsg('Tu perfil profesional está incompleto. Revisa tu nombre, carrera, resumen y que tengas al menos una habilidad técnica y una blanda. Redirigiendo a Mi perfil…');
-        setTimeout(() => setActiveView?.('profile'), 5000);
+      if (err.code === 'INTERVIEW_SETUP_REQUIRED') {
+        setSetupDialogDismissed(false);
+        setReloadKey((key) => key + 1);
         return;
       }
       setErrorMsg(mapError(err));
@@ -1158,7 +1201,7 @@ export default function Interviews({ setActiveView }) {
     try {
       const data = await apiRequest('/interview/pause', 'POST', { interviewId, responseMode: isTextModeRef.current ? 'text' : 'voice' });
       if (data.success) {
-        setActiveInterview({ interview: data.interview, messages: data.messages || [] });
+        setPausedInterviews((interviews) => [data.interview, ...interviews.filter((interview) => interview.id !== interviewId)]);
         setInterviewId(null);
         setIntState('launcher');
       }
@@ -1222,7 +1265,6 @@ export default function Interviews({ setActiveView }) {
         setRecommendations(data.recommendations || []);
         setSessionResponses((data.sessionResponses || []).map(r=>({...r,feedback:r.feedback || {}})));
         setCompletedEarly(true);
-        setActiveInterview(null);
         setInterviewId(null);
         setIntState('results');
       }
@@ -1235,7 +1277,8 @@ export default function Interviews({ setActiveView }) {
   };
 
   // ABANDONAR: descarta la entrevista en curso (o la detectada al entrar).
-  const handleAbandonInterview = async () => {
+  const handleAbandonInterview = async (id) => {
+    if (!id || starting || abandoning) return;
     const confirmed = await requestInterviewConfirm({
       title: 'Descartar entrevista',
       message: 'El progreso de esta entrevista se descartará y no podrás reanudarla.',
@@ -1245,45 +1288,39 @@ export default function Interviews({ setActiveView }) {
     });
     if (!confirmed) return;
 
-    const id = interviewId || activeInterview?.interview?.id;
-    if (!id) {
-      cleanupInterviewSession(true);
-      setIntState('launcher');
-      return;
-    }
+    const isCurrentInterview = id === interviewId;
     setAbandoning(true);
     setErrorMsg('');
-    cleanupInterviewSession(true);
+    if (isCurrentInterview) cleanupInterviewSession(true);
     try {
       await apiRequest('/interview/abandon', 'POST', { interviewId: id });
+      setPausedInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
     } catch (err) {
       console.warn('[abandon] No se pudo descartar en backend:', err.message);
-      setActiveInterview(null);
-      setInterviewId(null);
-      setErrorMsg('No se pudo cerrar la entrevista en el servidor. Si reaparece al recargar, descártala de nuevo.');
+      setErrorMsg('No se pudo descartar la entrevista. Intenta de nuevo.');
     } finally {
       setAbandoning(false);
-      setIntState('launcher');
+      if (isCurrentInterview) setIntState('launcher');
     }
   };
 
-  // REANUDAR: retoma la entrevista en curso detectada al entrar.
-  const handleResumeInterview = async () => {
-    if (!activeInterview?.interview) return;
-    if (activeInterview.interview.status !== 'paused') return;
+  // REANUDAR: retoma la entrevista pausada que el usuario seleccionó.
+  const handleResumeInterview = async (id) => {
+    if (starting || abandoning || microphoneSetupPending) return;
 
+    setStarting(true);
     setErrorMsg('');
-    let iv = activeInterview.interview;
-    let msgs = activeInterview.messages || [];
+    let iv;
+    let msgs;
     try {
-      const data = await apiRequest('/interview/resume', 'POST', { interviewId: iv.id });
-      if (data.success) {
-        iv = data.interview;
-        msgs = data.messages || [];
-      }
+      const data = await apiRequest('/interview/resume', 'POST', { interviewId: id });
+      iv = data.interview;
+      msgs = data.messages || [];
     } catch (err) {
       setErrorMsg(mapError(err));
       return;
+    } finally {
+      setStarting(false);
     }
 
     const lastAiMsg = [...msgs].reverse().find(m => m.sender === 'ai');
@@ -1318,14 +1355,16 @@ export default function Interviews({ setActiveView }) {
     setSessionResponses(restored);
     sessionResponsesRef.current = restored;
     const savedMode = resolveInterviewResponseMode(iv.profile_summary,msgs,localStorage.getItem(`empleaia_interview_mode_${iv.id}`)) || 'voice';
-    setIsTextMode(savedMode === 'text' || microphoneAvailable === false);
+    const resumeInText = savedMode === 'text' || startInText;
+    setIsTextMode(resumeInText);
+    setAutoVoiceEnabled(!resumeInText);
     setEstimatedScore(interviewAverageScore(restored) == null ? '--' : `${interviewAverageScore(restored)}%`);
     setQuestionCount((iv.questions_answered || 0) + 1);
     setTotalQuestions(iv.total_questions || 5);
     setUserTextResponse('');
     setIsPaused(false);
     setCompletedEarly(false);
-    setActiveInterview(null);
+    setPausedInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
     setIntState('active');
   };
 
@@ -1637,14 +1676,7 @@ export default function Interviews({ setActiveView }) {
       {errorMsg && (
         <div className="bg-rose-50 border border-rose-100 text-rose-650 text-xs rounded-xl p-4 flex items-start gap-3 mb-6">
           <AlertCircle className="h-4.5 w-4.5 shrink-0 mt-0.5" />
-          <div className="space-y-2">
-            <p>{errorMsg}</p>
-            {errorMsg === missingTargetMessage && (
-              <button type="button" onClick={() => setActiveView?.('documents-cv')} className="font-semibold underline cursor-pointer">
-                Ir a Personalización del CV
-              </button>
-            )}
-          </div>
+          <p>{errorMsg}</p>
         </div>
       )}
 
@@ -1661,75 +1693,123 @@ export default function Interviews({ setActiveView }) {
             Reintentar
           </button>
         </div>
-      ) : isProfileEmpty ? (
-        /* ALERTA DE CONFIGURACIÓN */
-        <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-8 text-center max-w-md mx-auto space-y-4 shadow-sm mt-12">
-          <AlertCircle className="h-12 w-12 text-amber-500 mx-auto" />
-          <h3 className="text-lg font-bold text-slate-900 dark:text-white">Perfil Incompleto</h3>
-          <p className="text-slate-500 dark:text-slate-300 text-xs leading-relaxed">
-            Completa tus datos en la pestaña "Mi perfil" primero. Esto le permite a la IA entrevistadora modular las preguntas técnicas a tu stack exacto.
-          </p>
-        </div>
       ) : intState === 'launcher' ? (
         /* ========================================================= */
         /* LAUNCHER DE ENTREVISTAS (FIGURA 13 - IZQUIERDA) */
         /* ========================================================= */
         <div className="mx-auto w-full max-w-[1600px] space-y-6">
+          <ConfirmDialog
+            open={needsInterviewSetup && !setupDialogDismissed}
+            title={missingProfileContext ? 'Completa tu perfil para practicar' : 'Define el puesto para tu entrevista'}
+            message={missingProfileContext ? profileRequirementMessage : `${targetRequirementMessage} Completa los datos en el CV para adaptar tus preguntas.`}
+            confirmLabel={missingProfileContext ? 'Editar mi perfil' : 'Completar puesto en el CV'}
+            cancelLabel="Ahora no"
+            variant="info"
+            onConfirm={() => setActiveView?.(missingProfileContext ? 'profile-edit' : 'cv-target')}
+            onCancel={() => setSetupDialogDismissed(true)}
+          />
+          <ConfirmDialog
+            open={needsMicrophoneChoice}
+            title="¿Quieres responder por voz?"
+            message="Si eliges voz, el navegador pedirá permiso para usar el micrófono después de que termine la primera pregunta."
+            confirmLabel="Responder por voz"
+            cancelLabel="Responder por escrito"
+            variant="info"
+            icon={Mic}
+            onConfirm={() => setPrefersVoice(true)}
+            onCancel={() => setPrefersVoice(false)}
+          />
           {/* Franja superior integrada: permisos + comparar entrevistas (HU16) */}
           <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-4 shadow-sm flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold uppercase tracking-widest block">Permisos de entrevista</span>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                Al comenzar se inicia la conversación por voz y se solicita el micrófono si hace falta. Puedes elegir texto. Di «termina la entrevista» para cerrar y evaluar tus respuestas.
+              <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold uppercase tracking-widest block">Modo de respuesta</span>
+              <p role="status" className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                {!microphoneAvailable && 'El micrófono no está disponible en este navegador. Puedes practicar por escrito.'}
+                {microphoneAvailable && microphonePermission === 'checking' && 'Comprobando el permiso del micrófono…'}
+                {!startInText && 'Responderás por voz. El micrófono se abrirá al terminar la lectura de cada pregunta.'}
+                {microphonePermission === 'denied' && MICROPHONE_BLOCKED_MESSAGE}
+                {microphoneAvailable && startInText && microphonePermission === 'prompt' && 'Puedes responder por escrito o elegir el modo por voz.'}
+                {microphoneAvailable && startInText && microphonePermission === 'granted' && 'Responderás por escrito. También puedes elegir el modo por voz.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {!needsInterviewSetup && microphoneAvailable && startInText && ['prompt', 'granted'].includes(microphonePermission) && (
+                <button
+                  type="button"
+                  onClick={() => setPrefersVoice(true)}
+                  disabled={starting}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 px-3 py-1.5 text-xs font-bold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-500/40 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+                >
+                  <Mic className="h-3.5 w-3.5" /> Responder por voz
+                </button>
+              )}
               <span className="text-[10px] text-slate-500">Evaluación del contenido · sin cámara</span>
-              <span className="hidden lg:block h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1" aria-hidden="true" />
-              <button
-                onClick={() => setActiveView?.('compare')}
-                className="inline-flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-150 dark:border-indigo-500/30 hover:border-indigo-400 dark:hover:border-indigo-500/70 px-3 py-1.5 rounded-xl transition-colors"
-              >
-                <TrendingUp className="h-3.5 w-3.5" /> Comparar entrevistas
-              </button>
+              {canCompare && (
+                <>
+                  <span className="hidden lg:block h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1" aria-hidden="true" />
+                  <button
+                    type="button"
+                    onClick={() => setActiveView?.('compare')}
+                    className="inline-flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-150 dark:border-indigo-500/30 hover:border-indigo-400 dark:hover:border-indigo-500/70 px-3 py-1.5 rounded-xl transition-colors"
+                  >
+                    <TrendingUp className="h-3.5 w-3.5" /> Comparar entrevistas
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Entrevista en curso: reanudar o descartar */}
-          {activeInterview?.interview && activeInterview.interview.status === 'paused' && (
-            <div className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-500/30 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-start gap-2">
-                <Play className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
-                <div>
-                  <span className="text-xs font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider block">Tienes una entrevista pausada</span>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-0.5">
-                    Entrevista {({general:'General',technical:'Técnica',behavioral:'Por competencias'}[activeInterview.interview.interview_type] || activeInterview.interview.interview_type)} · {activeInterview.interview.questions_answered || 0} de {activeInterview.interview.total_questions || 5} respondidas. Puedes retomarla donde la dejaste.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={handleResumeInterview}
-                  className="bg-indigo-650 hover:bg-indigo-700 text-white h-9 px-4 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5"
-                >
-                  <Play className="h-3.5 w-3.5" /> Reanudar
-                </button>
-                <button
-                  onClick={handleAbandonInterview}
-                  disabled={abandoning}
-                  className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 hover:border-red-300 dark:hover:border-red-500/60 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 h-9 px-4 rounded-xl text-xs font-bold cursor-pointer disabled:opacity-40 disabled:dark:bg-slate-800 disabled:dark:text-slate-500"
-                >
-                  {abandoning ? 'Descartando…' : 'Descartar'}
-                </button>
-              </div>
-            </div>
+          {pausedInterviews.length > 0 && (
+            <section className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-500/30 rounded-2xl p-5 shadow-sm">
+              <h2 className="text-xs font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">Entrevistas en pausa</h2>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Puedes retomar cualquiera o iniciar una entrevista nueva.</p>
+              <ul className="mt-3 divide-y divide-indigo-200 dark:divide-indigo-500/30">
+                {pausedInterviews.map((interview) => (
+                  <li key={interview.id} className="flex flex-col gap-2 py-3 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800 dark:text-slate-200">Entrevista {INTERVIEW_TYPE_LABELS[interview.interview_type] || interview.interview_type}</p>
+                      <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+                        {interview.questions_answered ?? 0} de {interview.total_questions ?? 5} respondidas · {new Date(interview.created_at).toLocaleString('es-PE', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </p>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleResumeInterview(interview.id)}
+                        disabled={starting || abandoning || microphoneSetupPending}
+                        className="bg-indigo-650 hover:bg-indigo-700 text-white h-9 px-4 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <Play className="h-3.5 w-3.5" /> Reanudar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAbandonInterview(interview.id)}
+                        disabled={starting || abandoning}
+                        className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 hover:border-red-300 dark:hover:border-red-500/60 text-slate-500 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 h-9 px-4 rounded-xl text-xs font-bold cursor-pointer disabled:opacity-40"
+                      >
+                        Descartar
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
 
           {/* Selector de Dificultad (HU14) */}
           <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-5 shadow-sm space-y-3">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
               <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-extrabold uppercase tracking-widest block">Nivel de Dificultad</span>
-              <span className="text-[11px] text-slate-400 dark:text-slate-400 font-semibold">Selecciona la dificultad y el tipo de entrevista a continuación.</span>
+              {needsInterviewSetup ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-slate-600 dark:text-slate-300">{missingProfileContext ? 'Completa tu perfil para empezar.' : 'Completa el puesto y su descripción para empezar.'}</span>
+                  <button type="button" onClick={() => setSetupDialogDismissed(false)} className="cursor-pointer rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700">
+                    {missingProfileContext ? 'Completar perfil' : 'Configurar puesto'}
+                  </button>
+                </div>
+              ) : (
+                <span className="text-[11px] text-slate-400 dark:text-slate-400 font-semibold">Selecciona la dificultad y el tipo de entrevista a continuación.</span>
+              )}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
@@ -1737,17 +1817,18 @@ export default function Interviews({ setActiveView }) {
                 { value: 'intermediate', label: 'Intermedio 🟡', desc: 'Frameworks, APIs, y desarrollo estándar.' },
                 { value: 'advanced', label: 'Avanzado 🔴', desc: 'Diseño de sistemas, arquitectura y alta exigencia.' }
               ].map(level => {
-                const isSelected = selectedDifficulty === level.value;
-                const isSuggested = suggestedDifficulty === level.value;
+                const isSelected = !needsInterviewSetup && selectedDifficulty === level.value;
+                const isSuggested = !needsInterviewSetup && suggestedDifficulty === level.value;
                 return (
                   <button
                     key={level.value}
                     type="button"
+                    disabled={newInterviewBlocked}
                     onClick={() => setSelectedDifficulty(level.value)}
-                    className={`text-left p-4 rounded-xl border transition-all duration-200 cursor-pointer ${
+                    className={`text-left p-4 rounded-xl border transition-all duration-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
                       isSelected
                         ? 'border-indigo-600 dark:border-indigo-500/70 bg-indigo-50/40 dark:bg-indigo-950/40 ring-1 ring-indigo-600 dark:ring-indigo-500/20'
-                        : 'border-slate-200 dark:border-slate-700/60 hover:border-slate-350 dark:hover:border-slate-500 bg-white dark:bg-slate-950/60 shadow-sm'
+                        : 'border-slate-200 dark:border-slate-700/60 enabled:hover:border-slate-350 dark:enabled:hover:border-slate-500 bg-white dark:bg-slate-950/60 shadow-sm'
                     }`}
                   >
                     <div className="flex justify-between items-center">
@@ -1779,12 +1860,12 @@ export default function Interviews({ setActiveView }) {
                 </div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">General</h3>
                 <p className="text-xs text-slate-450 dark:text-slate-300 leading-relaxed">
-                  Preguntas generales de comportamiento, encaje cultural e historia laboral técnica.
+                  Preguntas sobre tu formación, tu motivación y cómo actuarías en situaciones del puesto.
                 </p>
               </div>
               <button
                 onClick={() => handleStartInterview('general')}
-                disabled={starting}
+                disabled={newInterviewBlocked}
                 className="w-full bg-slate-105 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-700/60 hover:border-indigo-500 dark:hover:border-indigo-500/70 hover:text-indigo-600 dark:hover:text-indigo-300 text-slate-600 dark:text-slate-300 text-xs font-bold py-2 rounded-xl cursor-pointer disabled:opacity-40 disabled:dark:bg-slate-800 disabled:dark:text-slate-500"
               >
                 Comenzar
@@ -1804,7 +1885,7 @@ export default function Interviews({ setActiveView }) {
               </div>
               <button
                 onClick={() => handleStartInterview('technical')}
-                disabled={starting}
+                disabled={newInterviewBlocked}
                 className="w-full bg-indigo-650 hover:bg-indigo-700 text-white text-xs font-bold py-2 rounded-xl shadow-sm shadow-indigo-600/10 cursor-pointer disabled:opacity-40 disabled:dark:bg-slate-800 disabled:dark:text-slate-500 disabled:dark:border disabled:dark:border-slate-700/60"
               >
                 Comenzar
@@ -1819,12 +1900,12 @@ export default function Interviews({ setActiveView }) {
                 </div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Por competencias</h3>
                 <p className="text-xs text-slate-455 dark:text-slate-300 leading-relaxed">
-                  Preguntas orientadas a evaluar tus metodologías ágiles, resolución y habilidades blandas.
+                  Preguntas sobre trabajo en equipo, comunicación y resolución de problemas. Puedes usar ejemplos de estudios, proyectos o trabajo.
                 </p>
               </div>
               <button
                 onClick={() => handleStartInterview('behavioral')}
-                disabled={starting}
+                disabled={newInterviewBlocked}
                 className="w-full bg-slate-105 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-700/60 hover:border-indigo-500 dark:hover:border-indigo-500/70 hover:text-indigo-600 dark:hover:text-indigo-300 text-slate-600 dark:text-slate-300 text-xs font-bold py-2 rounded-xl cursor-pointer disabled:opacity-40 disabled:dark:bg-slate-800 disabled:dark:text-slate-500"
               >
                 Comenzar
@@ -1906,7 +1987,7 @@ export default function Interviews({ setActiveView }) {
               messages={chatMessages}
               totalQuestions={totalQuestions}
               typing={isAnalyzing}
-              typingLabel="La entrevistadora está analizando tu respuesta..."
+              typingLabel={avatarVariant === 'man' ? 'El entrevistador está analizando tu respuesta...' : 'La entrevistadora está analizando tu respuesta...'}
             >
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-6 shadow-sm space-y-5">
               {isPaused ? (
@@ -1938,12 +2019,13 @@ export default function Interviews({ setActiveView }) {
                   isRecording={isRecording}
                   onToggleRecording={toggleRecording}
                   micDisabled={!microphoneAvailable}
+                  questionPlayback={questionPlayback}
                   showRecordingPanel={showRecordingPanel}
                   recordingSeconds={recordingSeconds}
                   onPause={handlePauseInterview}
                   onFinish={handleFinishInterview}
                   finishing={finishingInterview}
-                  onAbandon={handleAbandonInterview}
+                  onAbandon={() => handleAbandonInterview(interviewId)}
                   abandoning={abandoning}
                   onSend={handleSendResponse}
                   sendLabel={questionCount === totalQuestions ? 'Finalizar Entrevista' : 'Enviar respuesta'}
@@ -1966,36 +2048,33 @@ export default function Interviews({ setActiveView }) {
           {/* Columna Derecha: Webcam y Alertas Gestuales (col-span-4) */}
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 rounded-2xl p-5 shadow-sm overflow-hidden relative">
-              <div className="absolute right-0 top-0 h-28 w-28 rounded-bl-full bg-gradient-to-br from-indigo-100 via-cyan-50 to-transparent dark:from-indigo-950/70 dark:via-cyan-950/30 dark:to-transparent" />
               <div className="relative flex flex-col items-center gap-3 text-center">
                 <AiInterviewerAvatar
-                  status={errorMsg ? 'error' : isPaused ? 'paused' : isAiSpeaking ? 'speaking' : isRecording ? 'listening' : isAnalyzing ? 'analyzing' : isTextMode ? 'writing' : 'idle'}
+                  status={avatarStatus}
                   avatarRef={aiOrbRef}
                   variant={avatarVariant}
+                  showQuestion={Boolean(questionId && questionId === silentQuestionId)}
                 />
                 <div className="min-w-0 w-full">
                   <span className="text-[9px] font-black uppercase tracking-wide text-slate-400 dark:text-slate-500 block">Entrevistador virtual con IA</span>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
-                    {errorMsg ? 'Necesita atención' : isPaused ? 'Pausado' : isAiSpeaking ? 'Hablando' : isRecording ? 'Escuchando' : isAnalyzing ? 'Analizando' : isTextMode ? 'Esperando respuesta escrita' : 'En espera'}
+                  <h3 aria-live="polite" className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
+                    {errorMsg ? 'Necesita atención' : isPaused ? 'Pausado' : isAiSpeaking ? 'Hablando' : isRecording ? 'Escuchando' : avatarIsAnalyzing ? 'Analizando' : isTextMode ? 'Esperando respuesta escrita' : 'En espera'}
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed mt-1">
                     {errorMsg ? 'Revisa el mensaje y reintenta la operación.' : isPaused ? 'La sesión está detenida.' : isAiSpeaking
-                      ? 'El entrevistador virtual está leyendo la pregunta.'
+                      ? 'Lectura de la pregunta en curso.'
                       : isRecording
                         ? 'Responde con naturalidad, como en una videollamada.'
-                        : isAnalyzing
+                        : avatarIsAnalyzing
                           ? 'Revisando tu respuesta para continuar la conversación.'
-                          : 'Lista para guiar la simulación.'}
+                          : 'En espera de tu respuesta.'}
                   </p>
                 </div>
               </div>
 
-              <label className="relative mt-3 flex items-center justify-center gap-2 text-xs text-slate-500">
-                Personaje
-                <select aria-label="Personaje del entrevistador" value={avatarVariant} onChange={e=>{setAvatarVariant(e.target.value);localStorage.setItem('empleaia_avatar_variant',e.target.value);}} className="rounded-lg border border-slate-200 bg-white dark:bg-slate-800 p-1.5">
-                  <option value="woman">Mujer</option><option value="man">Hombre</option>
-                </select>
-              </label>
+              <div className="mt-3 flex justify-center">
+                <InterviewerPicker value={avatarVariant} onChange={selectAvatar} />
+              </div>
               {/* Información de sesión (reubicada desde la antigua cabecera del chat) */}
               <div className="relative mt-4 pt-4 border-t border-slate-100 dark:border-slate-700/60 space-y-3">
                 <div className="flex items-center justify-between gap-2">
@@ -2007,11 +2086,13 @@ export default function Interviews({ setActiveView }) {
                   </div>
                   <button
                     onClick={() => {
+                      if (isRecordingRef.current || recordingStartPendingRef.current) return;
                       const newVal = !isMuted;
                       setIsMuted(newVal);
                       localStorage.setItem('isMuted', String(newVal));
                     }}
-                    className="p-2 bg-slate-100 dark:bg-slate-900/60 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-650 dark:text-slate-300 rounded-xl cursor-pointer transition-all border border-slate-200 dark:border-slate-700/60 flex items-center gap-1.5 shrink-0"
+                    disabled={isRecording}
+                    className="p-2 bg-slate-100 dark:bg-slate-900/60 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-650 dark:text-slate-300 rounded-xl cursor-pointer transition-all border border-slate-200 dark:border-slate-700/60 flex items-center gap-1.5 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                     title={isMuted ? 'Activar lectura de voz' : 'Silenciar lectura de voz'}
                   >
                     {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4 text-indigo-600" />}
@@ -2083,7 +2164,10 @@ export default function Interviews({ setActiveView }) {
                 Ver detalle por pregunta
               </button>
               <button
-                onClick={() => setIntState('launcher')}
+                onClick={() => {
+                  setIntState('launcher');
+                  if (!canCompare) setReloadKey((key) => key + 1);
+                }}
                 className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-5 py-2 rounded-xl text-xs shadow-sm cursor-pointer transition-colors"
               >
                 Finalizar

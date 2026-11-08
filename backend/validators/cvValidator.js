@@ -104,7 +104,7 @@ export const generatedCvSchema = z.object({
   headline:             z.string(),
   professional_summary: z.string(),
   work_experience:      z.array(cvWorkExperienceSchema),
-  academic_background:  z.array(cvAcademicBackgroundSchema),
+  academic_background:  z.array(cvAcademicBackgroundSchema.extend({ id: z.string().optional() })),
   technical_skills:     cvTechnicalSkillsSchema,
   technical_skill_order: z.array(z.enum(CV_TECHNICAL_SKILL_CATEGORIES))
     .length(CV_TECHNICAL_SKILL_CATEGORIES.length)
@@ -118,6 +118,7 @@ export const generatedCvSchema = z.object({
 /** Contrato de entrada de IA; la reconciliación normaliza cantidades y orden antes de persistir. */
 export const aiGeneratedCvSchema = generatedCvSchema.extend({
   work_experience: z.array(aiWorkExperienceSchema),
+  academic_background: z.array(cvAcademicBackgroundSchema),
   technical_skill_order: z.array(z.enum(CV_TECHNICAL_SKILL_CATEGORIES))
     .length(CV_TECHNICAL_SKILL_CATEGORIES.length),
 }).strict();

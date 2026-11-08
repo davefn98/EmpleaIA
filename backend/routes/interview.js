@@ -12,7 +12,7 @@ import { closeInterviewSession } from '../lib/closeInterviewSession.js';
 import { generateInterviewAnalysis } from '../services/interviewAnalysisService.js';
 import { compareInterviewSessions, comparisonRequestSchema } from '../services/interviewComparisonService.js';
 import {
-  getHasApiKey, resolveTokens, classifyOpenAIError, TRANSCRIBE_ERROR_RESPONSES, buildDifficultyInstruction,
+  getHasApiKey, resolveTokens, classifyOpenAIError, TRANSCRIBE_ERROR_RESPONSES, buildDifficultyInstruction, ADVANCED_NEXT_QUESTION_FORMAT, formatAdvancedNextQuestion,
   audioExtensionFromMime, buildProfileSummary, buildPriorEvalSummary, buildQAPairs, MAX_INTERVIEW_CONTEXT_CHARS, averageInterviewScore, sanitizeContentFeedback, getSessionTokenBudget, resolveInterviewResponseMode, withInterviewResponseMode, groundInterviewGuideMetrics, isExplicitInterviewNonAnswer
 } from '../services/interviewService.js';
 import fs from 'fs';
@@ -233,15 +233,11 @@ router.post('/interview/start', requireAuth, async (req, res) => {
   // 2. Validar campos mínimos del perfil
   const missing = [];
   if (!profile.first_name?.trim()) missing.push('nombre');
-  if (!profile.career?.trim())      missing.push('carrera');
   if (!profile.target_role?.trim()) missing.push('puesto objetivo');
   if (!profile.target_job_description?.trim()) missing.push('descripción del puesto objetivo');
-  if (!profile.bio?.trim())         missing.push('resumen profesional');
-  if (!(profile.technical_skills?.length)) missing.push('al menos 1 habilidad técnica');
-  if (!(profile.soft_skills?.length))      missing.push('al menos 1 habilidad blanda');
 
   if (missing.length > 0) {
-    return res.status(400).json({ error: 'Completa tu perfil antes de iniciar una entrevista personalizada.', missingFields: missing });
+    return res.status(400).json({ code: 'INTERVIEW_SETUP_REQUIRED', error: `Completa estos datos antes de iniciar la entrevista: ${missing.join(', ')}.`, missingFields: missing });
   }
 
   const [workResult, academicResult] = await Promise.all([
@@ -249,7 +245,17 @@ router.post('/interview/start', requireAuth, async (req, res) => {
     supabaseClient.from('academic_background').select('*').eq('profile_id',profileId)
   ]);
   if(workResult.error || academicResult.error) return res.status(500).json({error:'No se pudo cargar tu experiencia y formación. Reintenta antes de iniciar.'});
-  const profileSummary = withInterviewResponseMode(buildProfileSummary(profile, workResult.data || [], academicResult.data || []),req.body.responseMode === 'text' ? 'text' : 'voice');
+  const work = workResult.data || [];
+  const academic = academicResult.data || [];
+  const hasEducation = academic.some((study) => study.institution?.trim() && study.degree?.trim());
+  if (!hasEducation) {
+    return res.status(400).json({
+      code: 'INTERVIEW_SETUP_REQUIRED',
+      error: 'Agrega al menos un estudio con institución y carrera en Mi perfil.',
+      missingFields: ['estudios'],
+    });
+  }
+  const profileSummary = withInterviewResponseMode(buildProfileSummary(profile, work, academic),req.body.responseMode === 'text' ? 'text' : 'voice');
   if(profileSummary.length > MAX_INTERVIEW_CONTEXT_CHARS) return res.status(400).json({error:'El perfil y la descripción exceden el tamaño de contexto admitido. Ajusta la descripción sin omitir requisitos relevantes; no hemos recortado tus datos.'});
 
 
@@ -326,7 +332,6 @@ router.post('/interview/start', requireAuth, async (req, res) => {
   const startPrompt = `Perfil resumido: ${profileSummary}
 Tipo de entrevista: ${interviewType}
 Nivel de dificultad: ${difficultyLevel}
-Pauta del nivel: ${buildDifficultyInstruction(difficultyLevel)}
 Preguntas recientes (NO repetir): ${pastQuestions.length ? pastQuestions.slice(0, 8).map((q, i) => `${i + 1}. ${q}`).join(' | ') : 'Ninguna.'}
 
 Formula la primera pregunta de apertura de la entrevista para el nivel de dificultad seleccionado.`;
@@ -341,7 +346,7 @@ Formula la primera pregunta de apertura de la entrevista para el nivel de dificu
     const { content, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_questions',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_START },
+        { role: 'system', content: `${SYSTEM_PROMPT_INTERVIEW_START}\n\nPauta obligatoria del nivel: ${buildDifficultyInstruction(difficultyLevel)}` },
         { role: 'user',   content: startPrompt }
       ],
       db: supabaseClient,
@@ -511,7 +516,6 @@ Repregunta disponible: ${canFollowUp
   const evalPrompt = `Perfil resumido: ${profileSummary}
 Tipo de entrevista: ${interviewType}
 Nivel de dificultad: ${difficultyLevel}
-Pauta del nivel: ${buildDifficultyInstruction(difficultyLevel)}
 ${responseTimedOut ? 'El sistema registra tiempo agotado sin respuesta. No es contenido del candidato ni demuestra falta de conocimientos; describe ausencia de respuesta, puntúa este turno con 0 y continúa sin repreguntar.' : ''}
 Formula una sola pregunta breve (máximo 45 palabras), sin repetir los temas ya abordados.
 Preguntas principales ya formuladas en esta sesión (no repetir ni reformular el mismo tema): ${JSON.stringify(priorMainQuestions)}
@@ -527,12 +531,14 @@ ${isLastQuestion
   // 6. Llamar a OpenAI
   let evalJson   = null;
   let newTokens  = 0;
+  const levelInstruction = buildDifficultyInstruction(difficultyLevel);
+  const questionFormat = difficultyLevel === 'advanced' ? `\n\n${ADVANCED_NEXT_QUESTION_FORMAT}` : '';
 
   try {
     const { content: raw, usage, provider, model } = await generateWithFallbackDetailed({
       useCase: 'interview_feedback',
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT_INTERVIEW_EVAL },
+        { role: 'system', content: `${SYSTEM_PROMPT_INTERVIEW_EVAL}\n\nPauta obligatoria del nivel: ${levelInstruction}${questionFormat}` },
         { role: 'user',   content: evalPrompt }
       ],
       db: supabaseClient,
@@ -591,7 +597,14 @@ ${isLastQuestion
     return res.status(502).json({error:'La IA devolvió una evaluación incompleta. Tu respuesta sigue disponible para reintentar.'});
   }
   evalJson.feedback = evalJson.feedback ? {...groundInterviewGuideMetrics(sanitizeContentFeedback(evalJson.feedback),profileSummary,[originalAnswer,answer]),response_mode:responseMode} : null;
-  if(action === 'next_question' && !isLastQuestion && !evalJson.is_finished && !evalJson.next_question?.trim()) {
+  const shouldFinish = isLastQuestion || evalJson.is_finished;
+  let nextQuestion = null;
+  if (action === 'next_question' && !shouldFinish) {
+    nextQuestion = difficultyLevel === 'advanced'
+      ? formatAdvancedNextQuestion(evalJson.next_question)
+      : typeof evalJson.next_question === 'string' ? evalJson.next_question.trim() : null;
+  }
+  if(action === 'next_question' && !shouldFinish && !nextQuestion) {
     return res.status(502).json({error:'La IA no generó la siguiente pregunta. Reintenta; no se avanzó la sesión.'});
   }
 
@@ -632,8 +645,6 @@ ${isLastQuestion
   }
 
   // 10. Determinar estado de finalización
-  const shouldFinish    = isLastQuestion || evalJson.is_finished;
-  const nextQuestion    = shouldFinish ? null : evalJson.next_question;
   const finalStatus     = shouldFinish
     ? ((budgetExhausted || questionsAnswered+1 < totalQuestions) ? 'completed_early' : 'completed')
     : 'active';

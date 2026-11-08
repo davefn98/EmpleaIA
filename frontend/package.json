@@ -13,12 +13,11 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",
     "@tailwindcss/vite": "^4.3.0",
-    "html2canvas-pro": "^2.0.4",
-    "html2pdf.js": "^0.14.0",
     "lucide-react": "^1.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "tailwindcss": "^4.3.0"
+    "tailwindcss": "^4.3.0",
+    "three": "0.179.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -19,7 +19,8 @@ import {
 } from 'lucide-react';
 import CVPreview from '../components/cv/CVPreview';
 import { CV_TEMPLATES } from '../config/cvThemes';
-import { restoreCvDocument, restoreCvTheme } from '../utils/documentDrafts';
+import { restoreCvDocument, restoreCvTheme, restoreLetterDocument } from '../utils/documentDrafts';
+import { cvDraftPath, letterDraftPath } from '../utils/documentDraftRoute';
 
 export default function Drafts({ navigateTo }) {
   const { toast, showConfirm } = useNotification();
@@ -79,6 +80,7 @@ export default function Drafts({ navigateTo }) {
         id: l.id,
         title: l.document_title || `Carta para ${l.job_offer_text ? l.job_offer_text.slice(0, 20) : 'Vacante'}`,
         type: 'letter',
+        targetRole: restoreLetterDocument(l).targetRole,
         status: l.status || 'generated',
         updatedAt: l.updated_at || l.created_at,
         data: { letter_content: l.letter_content, job_offer_text: l.job_offer_text }
@@ -130,15 +132,9 @@ export default function Drafts({ navigateTo }) {
 
   const handleEdit = (doc, asCopy = false) => {
     if (doc.type === 'cv') {
-      localStorage.removeItem('empleaia_edit_letter_id');
-      localStorage.setItem('empleaia_edit_cv_id', doc.id);
-      localStorage.setItem('empleaia_edit_cv_as_copy', String(asCopy));
-      navigateTo('/documents/cv');
+      navigateTo(cvDraftPath(doc.id, asCopy));
     } else {
-      localStorage.removeItem('empleaia_edit_cv_id');
-      localStorage.removeItem('empleaia_edit_cv_as_copy');
-      localStorage.setItem('empleaia_edit_letter_id', doc.id);
-      navigateTo('/documents/cover-letter');
+      navigateTo(letterDraftPath(doc.id));
     }
   };
 
@@ -281,6 +277,9 @@ export default function Drafts({ navigateTo }) {
                               <p className="mt-0.5 font-normal text-slate-500 dark:text-slate-400">
                                 {CV_TEMPLATES.find(({ id }) => id === restoreCvTheme(doc.style).template)?.name || 'Plantilla guardada'}
                               </p>
+                            )}
+                            {doc.type === 'letter' && doc.targetRole && (
+                              <p className="mt-0.5 font-normal text-slate-500 dark:text-slate-400">{doc.targetRole}</p>
                             )}
                           </div>
                         </div>

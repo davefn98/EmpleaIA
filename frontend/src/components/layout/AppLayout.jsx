@@ -77,7 +77,7 @@ export default function AppLayout({ user, profile, pathname, onNavigate, theme, 
   };
 
   return (
-    <div className={`auth-theme-container ${theme === 'dark' ? 'dark' : ''} h-full w-full`}>
+    <div className="auth-theme-container h-full w-full">
       <div
         className="grid h-screen w-full overflow-hidden bg-slate-50 dark:bg-slate-950 transition-[grid-template-columns] duration-300 ease-in-out"
         style={{ gridTemplateColumns: isMobile ? 'minmax(0, 1fr)' : `${sidebarWidth} minmax(0, 1fr)` }}

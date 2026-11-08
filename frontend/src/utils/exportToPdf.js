@@ -1,26 +1,25 @@
-let html2pdfLoaderOverride = null;
+const previewStyles = [
+  'font-family', 'font-size', 'font-weight', 'line-height', 'white-space', 'text-align',
+  'color', 'background-color', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+];
 
-const getHtml2Pdf = async () => {
-  if (html2pdfLoaderOverride) return html2pdfLoaderOverride();
+function serializePreview(element) {
+  const copy = element.cloneNode(true);
+  const originals = [element, ...element.querySelectorAll('[class]')];
+  const copies = [copy, ...copy.querySelectorAll('[class]')];
+  originals.forEach((original, index) => {
+    const computed = getComputedStyle(original);
+    for (const property of previewStyles) {
+      copies[index].style.setProperty(property, computed.getPropertyValue(property));
+    }
+  });
+  return copy.outerHTML;
+}
 
-  try {
-    const { loadPdfEngine } = await import('./pdfBrowserEngine.js');
-    return await loadPdfEngine();
-  } catch (cause) {
-    const error = new Error('No se pudo cargar el generador. Guarda el borrador, recarga la página e intenta descargarlo de nuevo.', { cause });
-    error.code = 'PDF_ENGINE_UNAVAILABLE';
-    throw error;
-  }
-};
-
-const waitForFonts = async () => {
-  if (!document.fonts?.ready) return;
-
-  await Promise.race([
-    document.fonts.ready,
-    new Promise((resolve) => setTimeout(resolve, 1500))
-  ]);
-};
+async function requestDocumentPdf(html) {
+  const { apiRequest } = await import('./api.js');
+  return apiRequest('/documents/pdf', 'POST', { html }, 45000, 'pdf');
+}
 
 const downloadBlob = (pdfBlob, fileName) => {
   const blobUrl = URL.createObjectURL(pdfBlob);
@@ -41,44 +40,10 @@ const downloadBlob = (pdfBlob, fileName) => {
   }
 };
 
-export const PDF_PAGEBREAK_OPTIONS = Object.freeze({
-  mode: ['css', 'legacy'],
-  before: ['[data-pdf-break-before="true"]'],
-  after: ['[data-pdf-break-after="true"]'],
-  avoid: [
-    '.pdf-section-heading',
-    '.pdf-experience-heading',
-    '.pdf-keep-together',
-    '[data-pdf-keep-together="true"]'
-  ]
-});
-
-export const createPdfOptions = (element, fileName) => ({
-  margin: 0,
-  filename: fileName || 'EmpleaIA.pdf',
-  image: { type: 'jpeg', quality: 0.98 },
-  html2canvas: {
-    scale: 2,
-    useCORS: true,
-    backgroundColor: '#ffffff',
-    scrollX: 0,
-    scrollY: 0,
-    windowWidth: element.scrollWidth || element.offsetWidth
-  },
-  jsPDF: {
-    unit: 'mm',
-    format: 'a4',
-    orientation: 'portrait',
-    compress: true
-  },
-  pagebreak: PDF_PAGEBREAK_OPTIONS
-});
-
 /**
- * Exporta un elemento del DOM como PDF real y lo descarga en la pestaña actual.
- * No usa impresión nativa, ventanas emergentes ni eventos afterprint.
+ * Exporta la vista previa como PDF con texto seleccionable y descarga el archivo.
  */
-export const exportToPdf = async (elementId, fileName) => {
+export const exportToPdf = async (elementId, fileName, requestPdf = requestDocumentPdf) => {
   const element = document.getElementById(elementId);
   if (!element) {
     const error = new Error(`Elemento con ID "${elementId}" no encontrado en el DOM.`);
@@ -87,23 +52,15 @@ export const exportToPdf = async (elementId, fileName) => {
   }
 
   try {
-    await waitForFonts();
-
-    const html2pdf = await getHtml2Pdf();
-    const options = createPdfOptions(element, fileName);
-
-    const worker = html2pdf().set(options).from(element).toPdf();
-    const pdfBlob = await worker.outputPdf('blob');
-
-    downloadBlob(pdfBlob, options.filename);
+    const pdfBlob = await requestPdf(serializePreview(element));
+    if (pdfBlob?.type !== 'application/pdf' || !pdfBlob.size) {
+      throw new Error('El servidor no devolvió un PDF válido.');
+    }
+    downloadBlob(pdfBlob, fileName);
     return true;
   } catch (err) {
     const exportError = new Error(err?.message || 'Error durante la exportación a PDF.', { cause: err });
     exportError.code = err.code || 'PDF_EXPORT_ERROR';
     throw exportError;
   }
-};
-
-export const __setHtml2PdfLoaderForTests = (loader) => {
-  html2pdfLoaderOverride = loader;
 };

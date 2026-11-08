@@ -1,0 +1,224 @@
+.public-access {
+  min-height: 100dvh;
+  display: grid;
+  align-items: center;
+  padding: clamp(1rem, 4vw, 3rem);
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+.public-access__shell {
+  width: min(100%, 68rem);
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.17fr) minmax(0, 1fr);
+  grid-template-areas: "header header" "intro auth";
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 1.375rem;
+  background: var(--bg-card);
+}
+
+.public-access__header {
+  grid-area: header;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .75rem;
+  padding: 1rem clamp(1rem, 4vw, 3rem);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.public-access__intro {
+  grid-area: intro;
+  display: flex;
+  flex-direction: column;
+  padding: clamp(1.5rem, 5vw, 3.5rem);
+  background: var(--bg-app);
+}
+
+.public-access__eyebrow {
+  margin-bottom: .75rem;
+  color: var(--accent-text);
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.public-access__intro h1 {
+  max-width: 13ch;
+  font-size: clamp(2rem, 4.5vw, 3.5rem);
+  font-weight: 750;
+  letter-spacing: -.05em;
+  line-height: 1.06;
+}
+
+.public-access__lead {
+  max-width: 33ch;
+  margin-block: 1rem 1.5rem;
+  color: var(--text-secondary);
+}
+
+.public-access__features {
+  display: grid;
+  gap: .625rem;
+  font-size: .875rem;
+}
+
+.public-access__features li {
+  display: flex;
+  align-items: center;
+  gap: .625rem;
+}
+
+.public-access__features li span {
+  display: grid;
+  flex: 0 0 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: .5rem;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.public-access__features svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.public-access__project {
+  margin-top: auto;
+  padding-top: 2rem;
+  color: var(--text-secondary);
+  font-size: .8125rem;
+}
+
+.public-access__auth {
+  grid-area: auth;
+  align-content: center;
+  padding: clamp(1.25rem, 4vw, 3rem);
+  border-inline-start: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+}
+
+.access-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .25rem;
+  margin-bottom: 1.625rem;
+  padding: .25rem;
+  border: 1px solid var(--border-color);
+  border-radius: .625rem;
+  background: var(--bg-app);
+}
+
+.access-mode button {
+  min-height: 2.75rem;
+  padding: .25rem .375rem;
+  border-radius: .4375rem;
+  color: var(--text-secondary);
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+.access-mode button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.access-form-copy {
+  margin-bottom: 1.25rem;
+}
+
+.access-form-copy h2 {
+  font-size: clamp(1.375rem, 3vw, 1.875rem);
+  line-height: 1.2;
+  font-weight: 750;
+  letter-spacing: -.035em;
+}
+
+.access-form-copy p {
+  margin-top: .375rem;
+  color: var(--text-secondary);
+  font-size: .9375rem;
+}
+
+.access-form,
+.access-form label,
+.access-form__signup {
+  display: grid;
+}
+
+.access-form { gap: .875rem; }
+.access-form label { min-width: 0; gap: .375rem; font-size: .875rem; font-weight: 600; }
+.access-form__signup { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+
+.access-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.875rem;
+  padding: .5rem .75rem;
+  border: 1px solid var(--border-color);
+  border-radius: .5rem;
+  background: var(--bg-field);
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 400;
+}
+
+.access-form input::placeholder { color: var(--text-secondary); }
+
+.access-link {
+  justify-self: start;
+  color: var(--accent-text);
+  text-align: left;
+  font-size: .875rem;
+}
+
+.access-link:hover { text-decoration: underline; }
+
+.access-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .625rem;
+  min-height: 2.875rem;
+  padding: .5rem .75rem;
+  border-radius: .5rem;
+  background: var(--accent-primary);
+  color: var(--accent-on-primary);
+  font-size: .9375rem;
+  font-weight: 700;
+}
+
+.access-submit:not(:disabled):hover { background: var(--accent-hover); }
+.public-access button:not(:disabled), .public-access select { cursor: pointer; }
+.public-access button:disabled { opacity: .55; }
+.public-access :is(button, input, select, a):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+
+.access-message {
+  display: flex;
+  align-items: flex-start;
+  gap: .5rem;
+  margin-bottom: 1rem;
+  padding: .75rem;
+  border-radius: .5rem;
+  font-size: .875rem;
+}
+
+.access-message svg { flex-shrink: 0; margin-top: .125rem; }
+.access-message--error { background: var(--color-rose-50); color: var(--color-rose-650); }
+.access-message--success { background: var(--color-emerald-55); color: var(--color-emerald-650); }
+.dark .access-message--error { background: #3f232c; color: #fda4af; }
+.dark .access-message--success { background: #19382f; color: #a7f3d0; }
+.access-reset-link { display: inline-block; margin-top: 1rem; }
+
+@media (max-width: 640px) {
+  .public-access { align-items: start; padding: .75rem; }
+  .public-access__shell { grid-template-columns: minmax(0, 1fr); grid-template-areas: "header" "auth" "intro"; }
+  .public-access__auth { border-inline-start: 0; border-bottom: 1px solid var(--border-color); }
+  .public-access__intro h1 { max-width: 18ch; }
+  .access-form__signup label:nth-child(n+3) { grid-column: 1 / -1; }
+}

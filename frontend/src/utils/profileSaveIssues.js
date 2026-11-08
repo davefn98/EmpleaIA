@@ -3,7 +3,7 @@ const fieldNames = {
   phone: 'Teléfono', location: 'Ubicación', linkedin: 'LinkedIn', portfolio: 'Portafolio',
   career: 'Carrera o profesión', target_role: 'Puesto objetivo',
   target_job_description: 'Descripción del puesto', bio: 'Resumen profesional',
-  company: 'Empresa', role: 'Cargo', institution: 'Institución', degree: 'Título o grado',
+  company: 'Empresa', role: 'Cargo', institution: 'Institución', degree: 'Carrera o programa de estudios',
   start_date: 'Fecha de inicio', end_date: 'Fecha de fin', description: 'Descripción',
   technical_skills: 'Habilidades técnicas', soft_skills: 'Habilidades blandas', certifications: 'Certificaciones',
 };
@@ -16,11 +16,11 @@ const requiredMessages = {
   company: 'Escribe el nombre de la empresa.',
   role: 'Escribe el cargo que tuviste.',
   institution: 'Escribe el nombre de la institución.',
-  degree: 'Escribe el título o grado.',
+  degree: 'Escribe la carrera o el programa de estudios.',
   start_date: 'Escribe la fecha de inicio. Por ejemplo, marzo de 2025.',
 };
 
-export function missingProfileSaveFields({ firstName, lastName, phone, contactEmail, work, academic }) {
+export function missingProfileSaveFields({ firstName, lastName, phone, contactEmail, work = [], academic = [] }) {
   const requiredFields = [
     { path: ['profile', 'first_name'], value: firstName },
     { path: ['profile', 'last_name'], value: lastName },

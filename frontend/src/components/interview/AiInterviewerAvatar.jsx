@@ -1,19 +1,69 @@
+import { useEffect, useRef, useState } from 'react';
 import './AiInterviewerAvatar.css';
 
 const AVATAR_STATES = new Set(['idle', 'speaking', 'listening', 'analyzing', 'paused', 'completed', 'error', 'writing']);
 
-/**
- * Original layered illustration. Animation reflects application activity,
- * not the candidate's emotions or score. Speaking uses approximate movement;
- * its duration must be driven by the actual audio start/end/cancel events.
- * Keep the accessible status label outside this decorative component.
- */
-export default function AiInterviewerAvatar({ status = 'idle', variant = 'woman', avatarRef }) {
+export default function AiInterviewerAvatar({ status = 'idle', variant = 'woman', avatarRef, showQuestion = false }) {
   const state = AVATAR_STATES.has(status) ? status : 'idle';
   const appearance = variant === 'man' ? 'man' : 'woman';
+  const gesture = showQuestion && ['idle', 'writing'].includes(state) ? 'asking' : state;
+  const hostRef = useRef(null);
+  const sceneRef = useRef(null);
+  const gestureRef = useRef(gesture);
+  const variantRef = useRef(appearance);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    gestureRef.current = gesture;
+    sceneRef.current?.setStatus(gesture);
+  }, [gesture]);
+
+  useEffect(() => {
+    variantRef.current = appearance;
+    sceneRef.current?.setVariant(appearance);
+  }, [appearance]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    let disposed = false;
+    import('./executiveAvatarScene').then(({ mountExecutiveAvatar }) => {
+      if (disposed) return;
+      sceneRef.current = mountExecutiveAvatar(host, (available) => {
+        if (!disposed) setReady(available);
+      });
+      sceneRef.current.setVariant(variantRef.current);
+      sceneRef.current.setStatus(gestureRef.current);
+    }).catch(() => {
+      if (!disposed) {
+        sceneRef.current?.dispose();
+        sceneRef.current = null;
+        setReady(false);
+      }
+    });
+    return () => {
+      disposed = true;
+      sceneRef.current?.dispose();
+      sceneRef.current = null;
+    };
+  }, []);
 
   return (
-    <div ref={avatarRef} className={`ai-interviewer ai-interviewer--${state}`} data-state={state} data-variant={appearance} aria-hidden="true">
+    <div ref={avatarRef} className="executive-avatar" data-state={state} data-variant={appearance} data-3d={ready} aria-hidden="true">
+      <div ref={hostRef} className="executive-avatar__canvas" />
+      {!ready && <IllustratedAvatar state={gesture} appearance={appearance} />}
+      {(gesture === 'speaking' || gesture === 'asking') && (
+        <div className="executive-avatar__question"><span>¿</span><span>?</span></div>
+      )}
+      {state === 'analyzing' && (
+        <div className="executive-avatar__thought"><span /></div>
+      )}
+    </div>
+  );
+}
+
+function IllustratedAvatar({ state, appearance }) {
+  return (
+    <div className={`ai-interviewer ai-interviewer--${state}`}>
       <svg className="ai-interviewer__illustration" viewBox="0 0 240 280" fill="none" focusable="false" aria-hidden="true">
         <circle className="ai-interviewer__backdrop" cx="120" cy="140" r="106" />
         <circle className="ai-interviewer__activity-ring" cx="120" cy="140" r="108" />
@@ -80,7 +130,6 @@ export default function AiInterviewerAvatar({ status = 'idle', variant = 'woman'
           </g>
         </g>
       </svg>
-      <div className="ai-interviewer__processing"><span /><span /><span /></div>
     </div>
   );
 }

@@ -56,8 +56,13 @@ export default function InterviewMessageBubble({ message, totalQuestions, showEv
     );
   }
 
-  const score = message.feedback?.score;
+  const { score, general_comment, improvements } = message.feedback || {};
   const hasScore = typeof score === 'number';
+  const comment = typeof general_comment === 'string' ? general_comment.trim() : '';
+  const feedbackImprovements = Array.isArray(improvements)
+    ? improvements.filter((item) => typeof item === 'string' && item.trim())
+    : [];
+  const hasFeedbackDetail = comment || feedbackImprovements.length > 0;
 
   return (
     <div className="flex items-start gap-2.5 justify-end">
@@ -77,19 +82,19 @@ export default function InterviewMessageBubble({ message, totalQuestions, showEv
             Puntaje: {score}/100
           </span>
         )}
-        {showEvaluation && message.feedback && (
+        {showEvaluation && hasFeedbackDetail && (
           <div className="mt-1.5 w-full bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 rounded-xl p-3 space-y-2 text-left">
-            {message.feedback.general_comment && (
+            {comment && (
               <div>
                 <span className="text-slate-400 block text-[8.5px] font-bold uppercase mb-0.5">Feedback</span>
-                <p className="text-[11px] text-slate-650 dark:text-slate-350 leading-relaxed font-medium">{message.feedback.general_comment}</p>
+                <p className="text-[11px] text-slate-650 dark:text-slate-350 leading-relaxed font-medium">{comment}</p>
               </div>
             )}
-            {Array.isArray(message.feedback.improvements) && message.feedback.improvements.length > 0 && (
+            {feedbackImprovements.length > 0 && (
               <div>
                 <span className="text-slate-400 block text-[8.5px] font-bold uppercase mb-1">Oportunidades de mejora</span>
                 <ul className="list-disc pl-4 text-[11px] text-slate-500 dark:text-slate-400 space-y-0.5 font-medium">
-                  {message.feedback.improvements.map((imp, idx) => (
+                  {feedbackImprovements.map((imp, idx) => (
                     <li key={idx}>{imp}</li>
                   ))}
                 </ul>

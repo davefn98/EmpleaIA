@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cvEditorSnapshot } from '../src/utils/documentDrafts.js';
+import { cvDraftPath, letterDraftPath, readDocumentDraftPath } from '../src/utils/documentDraftRoute.js';
 import { canNavigate, protectUnsavedChanges } from '../src/utils/unsavedChanges.js';
-import { interviewScoreChange } from '../src/utils/interviewComparison.js';
+import { interviewScoreChange, orderInterviewsByDate } from '../src/utils/interviewComparison.js';
 import { missingProfileSaveFields, profileSaveIssues } from '../src/utils/profileSaveIssues.js';
 
 test('la comparación del editor ignora metadatos de la base pero detecta contacto y certificaciones editados', () => {
@@ -17,11 +18,27 @@ test('cancelar la salida impide navegar y retirar el aviso permite navegar tras 
   const target = new EventTarget();
   const dispose = protectUnsavedChanges(target, () => false);
   assert.equal(canNavigate(target, '/drafts'), false);
+  const reload = new Event('beforeunload', { cancelable: true });
+  target.dispatchEvent(reload);
+  assert.equal(reload.defaultPrevented, true);
   dispose();
   assert.equal(canNavigate(target, '/drafts'), true);
+  const savedReload = new Event('beforeunload', { cancelable: true });
+  target.dispatchEvent(savedReload);
+  assert.equal(savedReload.defaultPrevented, false);
   const discard = protectUnsavedChanges(target, () => true);
   assert.equal(canNavigate(target, '/drafts'), true);
   discard();
+});
+
+test('recargar la ruta distingue una carta guardada, un CV y una copia de un documento nuevo', () => {
+  assert.deepEqual(readDocumentDraftPath(cvDraftPath('cv-original')), { type: 'cv', id: 'cv-original', asCopy: false });
+  assert.deepEqual(readDocumentDraftPath(cvDraftPath('cv-original', true)), { type: 'cv', id: 'cv-original', asCopy: true });
+  assert.deepEqual(readDocumentDraftPath(letterDraftPath('carta-guardada')), { type: 'cover-letter', id: 'carta-guardada', asCopy: false });
+  assert.deepEqual(readDocumentDraftPath(letterDraftPath('carta-guardada', true)), { type: 'cover-letter', id: 'carta-guardada', asCopy: true });
+  assert.equal(readDocumentDraftPath('/documents/cv'), null);
+  assert.equal(readDocumentDraftPath('/documents/cv/customize'), null);
+  assert.equal(readDocumentDraftPath('/documents/cover-letter'), null);
 });
 
 test('la evolución usa orden temporal sin alterar la selección y distingue aumento, igualdad y descenso', () => {
@@ -33,6 +50,15 @@ test('la evolución usa orden temporal sin alterar la selección y distingue aum
   assert.equal(interviewScoreChange([old, { ...recent, avg_score: 60 }]), 0);
   assert.equal(interviewScoreChange([old, { ...recent, avg_score: 40 }]), -20);
   assert.equal(interviewScoreChange([old, { ...recent, avg_score: null }]), null);
+});
+
+test('las columnas comparadas se ordenan por hora de finalización y usan la creación en registros antiguos', () => {
+  const intermediate = { id: 'intermedia', avg_score: 85, created_at: '2026-11-07T21:55:00Z' };
+  const advanced = { id: 'avanzada', avg_score: 88, created_at: '2026-11-07T21:54:00Z', completed_at: '2026-11-07T21:57:00Z' };
+  const selection = [advanced, intermediate];
+  assert.deepEqual(orderInterviewsByDate(selection), [intermediate, advanced]);
+  assert.equal(selection[0], advanced);
+  assert.equal(interviewScoreChange(selection), 3);
 });
 test('El error de guardado identifica el campo y la sección del formulario', () => {
   const issues = profileSaveIssues([
@@ -46,7 +72,7 @@ test('El error de guardado identifica el campo y la sección del formulario', ()
     { tab: 'personal', text: 'Escribe tus nombres.' },
     { tab: 'personal', text: 'Revisa que tu correo de contacto esté bien escrito.' },
     { tab: 'trajectory', text: 'Experiencia 1. Revisa la fecha de inicio. Puedes escribir, por ejemplo, marzo de 2025.' },
-    { tab: 'trajectory', text: 'Estudio 2. Escribe el título o grado.' },
+    { tab: 'trajectory', text: 'Estudio 2. Escribe la carrera o el programa de estudios.' },
   ]);
 });
 
@@ -70,7 +96,7 @@ test('El guardado enumera los campos obligatorios vacíos de cada registro agreg
     'Experiencia 1. Escribe el nombre de la empresa.',
     'Experiencia 1. Escribe el cargo que tuviste.',
     'Estudio 1. Escribe el nombre de la institución.',
-    'Estudio 1. Escribe el título o grado.',
+    'Estudio 1. Escribe la carrera o el programa de estudios.',
     'Estudio 1. Escribe la fecha de inicio. Por ejemplo, marzo de 2025.',
   ]);
 });

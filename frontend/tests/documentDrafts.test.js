@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, updateCvDocumentData, readStoredCvTheme } from '../src/utils/documentDrafts.js';
+import { applyManualCvEdits, createCvDocumentData, prepareCvGeneration, restoreCvDocument, restoreCvTheme, restoreLetterDocument, letterContextSnapshot, updateCvDocumentData, readStoredCvTheme } from '../src/utils/documentDrafts.js';
 
 const generated = {
   headline: 'Backend Engineer | AWS', professional_summary: 'Resumen de la versión guardada',
@@ -118,6 +118,28 @@ test('editar carta conserva el texto y la vacante completa aunque tenga varias l
   assert.equal(restored.company, 'Acme');
   assert.equal(restored.jobDescription, 'APIs\nIntegraciones');
   assert.equal(restored.tone, 'formal');
+});
+
+test('la carta requiere regenerar si cambia la vacante o el tono y admite editar solo su texto', () => {
+  const restored = restoreLetterDocument({ id: 'letter-1', letter_content: 'Texto guardado', job_offer_text: 'Empresa: Acme\nPuesto Objetivo: Backend\nDescripción de la Vacante: APIs\nIntegraciones\nTono deseado: formal' });
+  const generatedContext = letterContextSnapshot(restored);
+  for (const field of ['company', 'targetRole', 'jobDescription', 'tone']) {
+    assert.notEqual(letterContextSnapshot({ ...restored, [field]: 'Nuevo valor' }), generatedContext);
+  }
+  assert.equal(letterContextSnapshot({ ...restored, content: 'Texto editado manualmente' }), generatedContext);
+  assert.equal(letterContextSnapshot({ ...restored, company: ' Acme ' }), generatedContext);
+  assert.equal(letterContextSnapshot({ ...restored, targetRole: 'Backend' }), generatedContext);
+});
+
+test('usar la última carta como base conserva sus campos y desvincula el destino del borrador original', () => {
+  const source = { id: 'letter-original', letter_content: 'Carta guardada', company: 'Acme', target_role: 'Soporte', job_description: 'Atención y seguimiento', tone: 'formal' };
+  const editing = restoreLetterDocument(source);
+  const copy = restoreLetterDocument(source, { asCopy: true });
+  assert.equal(editing.id, source.id);
+  assert.equal(copy.id, null);
+  assert.deepEqual(copy, { ...editing, id: null });
+  copy.content = 'Nueva carta editada';
+  assert.equal(source.letter_content, 'Carta guardada');
 });
 
 test('carta con oferta nula se puede abrir sin una excepción ni datos del perfil', () => {

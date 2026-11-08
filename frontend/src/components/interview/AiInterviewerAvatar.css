@@ -1,5 +1,92 @@
-.ai-interviewer {
+.executive-avatar {
   --voice-level: 0;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  width: min(100%, 360px);
+  aspect-ratio: 1.22;
+  overflow: hidden;
+  border-radius: 1rem;
+  background: radial-gradient(ellipse at 50% 34%, #fff, #e8eafa 77%);
+}
+
+.dark .executive-avatar {
+  background: radial-gradient(ellipse at 50% 34%, #3c455b, #242d43 77%);
+}
+
+.executive-avatar__canvas { position: absolute; inset: 0; }
+.executive-avatar__canvas canvas { display: block; width: 100%; height: 100%; }
+.executive-avatar[data-3d="false"] canvas { visibility: hidden; }
+.executive-avatar[data-state="listening"] {
+  box-shadow: inset 0 0 calc(10px + 24px * var(--voice-level)) rgb(45 212 191 / .27);
+}
+
+.executive-avatar__question,
+.executive-avatar__thought {
+  position: absolute;
+  right: 5%;
+  top: 7%;
+  pointer-events: none;
+}
+
+.executive-avatar__question {
+  display: flex;
+  align-items: center;
+  gap: .25em;
+  color: #4633a0;
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  line-height: 1;
+  font-weight: 700;
+}
+.dark .executive-avatar__question { color: #c4b5fd; }
+.executive-avatar__question span { transform: translateY(.24em) rotate(-13deg); }
+.executive-avatar__question span + span { transform: translateY(-.08em) rotate(13deg); }
+
+.executive-avatar__thought {
+  display: grid;
+  place-items: center;
+  width: clamp(64px, 8vw, 84px);
+  aspect-ratio: 1.62;
+  background:
+    radial-gradient(ellipse closest-side, white 97%, transparent) 2% 68% / 46% 64%,
+    radial-gradient(ellipse closest-side, white 97%, transparent) 28% 5% / 51% 80%,
+    radial-gradient(ellipse closest-side, white 97%, transparent) 69% 4% / 51% 82%,
+    radial-gradient(ellipse closest-side, white 97%, transparent) 98% 61% / 49% 68%,
+    radial-gradient(ellipse closest-side, white 97%, transparent) 49% 94% / 76% 64%;
+  background-repeat: no-repeat;
+  filter: drop-shadow(0 2px 3px rgb(15 23 42 / .27));
+  transform-origin: 15% 94%;
+}
+.executive-avatar__thought::before,
+.executive-avatar__thought::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  background: white;
+  aspect-ratio: 1;
+}
+.executive-avatar__thought::before { width: 13%; left: 12%; bottom: -10%; }
+.executive-avatar__thought::after { width: 8%; left: 3%; bottom: -26%; }
+.executive-avatar__thought span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: black;
+  box-shadow: -10px 0 black, 10px 0 black;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .executive-avatar__question span { animation: executive-question-in .52s cubic-bezier(.2, .75, .35, 1.25) both; }
+  .executive-avatar__question span + span { animation-delay: .14s; }
+  .executive-avatar__thought { animation: executive-question-in .28s ease-out both; }
+}
+@keyframes executive-question-in {
+  from { opacity: 0; translate: 0 .45em; scale: .55; }
+  to { opacity: 1; translate: 0 0; scale: 1; }
+}
+
+.ai-interviewer {
   --avatar-accent: #8a82ee;
   position: relative;
   width: clamp(150px, 16vw, 230px);
@@ -26,32 +113,18 @@
 .ai-interviewer__arm--right { transform-origin: 174px 192px; }
 .ai-interviewer__speaking-mouth { opacity: 0; transform-origin: 120px 142px; }
 .ai-interviewer__closed-mouth { transition: opacity .1s; }
-.ai-interviewer__processing {
-  display: flex;
-  position: absolute;
-  justify-content: center;
-  gap: 4px;
-  bottom: 7%;
-  left: 0;
-  right: 0;
-  opacity: 0;
-}
-.ai-interviewer__processing span { width: 5px; height: 5px; border-radius: 50%; background: #fff; }
 
 .ai-interviewer--speaking .ai-interviewer__closed-mouth { opacity: 0; }
 .ai-interviewer--speaking .ai-interviewer__speaking-mouth { opacity: 1; animation: ai-interviewer-talk .38s ease-in-out infinite alternate; }
-.ai-interviewer--speaking .ai-interviewer__head { animation: ai-interviewer-nod 2.1s ease-in-out infinite; }
+.ai-interviewer--speaking .ai-interviewer__head { animation: ai-interviewer-ask 1.45s ease-in-out infinite; }
+.ai-interviewer--asking .ai-interviewer__head { animation: ai-interviewer-ask 1.45s ease-in-out; }
 .ai-interviewer--speaking .ai-interviewer__arm--right { animation: ai-interviewer-gesture 2.4s ease-in-out infinite; }
 .ai-interviewer--speaking .ai-interviewer__activity-ring { opacity: .45; }
 .ai-interviewer--listening { --avatar-accent: #25a798; }
 .ai-interviewer--listening .ai-interviewer__backdrop { fill: #e7f7f2; }
-.ai-interviewer--listening .ai-interviewer__head { animation: ai-interviewer-nod 4s ease-in-out infinite; }
+.ai-interviewer--listening .ai-interviewer__head { animation: ai-interviewer-nod 3.6s ease-in-out infinite; }
 .ai-interviewer--listening .ai-interviewer__activity-ring { opacity: .5; stroke-width: calc(1.5px + var(--voice-level) * 9px); }
 .ai-interviewer--writing .ai-interviewer__head { animation: ai-interviewer-head 8s ease-in-out infinite; }
-.ai-interviewer--analyzing .ai-interviewer__processing { opacity: 1; }
-.ai-interviewer--analyzing .ai-interviewer__processing span { animation: ai-interviewer-dot 1.2s ease-in-out infinite; }
-.ai-interviewer--analyzing .ai-interviewer__processing span:nth-child(2) { animation-delay: .16s; }
-.ai-interviewer--analyzing .ai-interviewer__processing span:nth-child(3) { animation-delay: .32s; }
 .ai-interviewer--analyzing .ai-interviewer__activity-ring { opacity: .6; animation: ai-interviewer-process 14s linear infinite; }
 .ai-interviewer--paused .ai-interviewer__head,
 .ai-interviewer--paused .ai-interviewer__eyes,
@@ -63,10 +136,14 @@
 
 @keyframes ai-interviewer-blink { 0%, 42%, 46%, 100% { transform: scaleY(1); } 44% { transform: scaleY(.08); } }
 @keyframes ai-interviewer-head { 0%, 100% { transform: rotate(-1deg); } 50% { transform: rotate(1.2deg); } }
-@keyframes ai-interviewer-nod { 0%, 100% { transform: rotate(0deg) translateY(0); } 50% { transform: rotate(5deg) translateY(4px); } }
+@keyframes ai-interviewer-ask { 0%, 100% { transform: none; } 42% { transform: rotate(9deg) translateY(4px); } 72% { transform: rotate(-4deg); } }
+@keyframes ai-interviewer-nod {
+  0%, 24%, 46%, 100% { transform: none; }
+  14% { transform: rotate(5deg) translateY(6px); }
+  36% { transform: rotate(3deg) translateY(4px); }
+}
 @keyframes ai-interviewer-talk { 0% { transform: scaleY(.25) scaleX(.8); } 40% { transform: scaleY(.9) scaleX(.95); } 70% { transform: scaleY(.5) scaleX(1); } 100% { transform: scaleY(1); } }
 @keyframes ai-interviewer-gesture { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(14deg); } }
-@keyframes ai-interviewer-dot { 0%, 100% { opacity: .35; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-3px); } }
 @keyframes ai-interviewer-process { to { transform: rotate(360deg); } }
 
 .dark .ai-interviewer__backdrop { fill: #302a4b; }

@@ -40,7 +40,7 @@ router.post('/letter-generate', requireAuth, asyncHandler(async (req, res) => {
     return fail(res, 'Faltan parámetros requeridos (jobOfferText o jobDescription)', 400, 'BAD_REQUEST');
   }
 
-  const { profileId, jobOfferText, company, targetRole, jobDescription, tone, document_title, status } =
+  const { profileId, jobOfferText, company, targetRole, jobDescription, tone, document_title, status, persist } =
     parsed.data;
 
   // Llamada al servicio; errores de negocio conocidos (< 500) se capturan aquí.
@@ -58,6 +58,7 @@ router.post('/letter-generate', requireAuth, asyncHandler(async (req, res) => {
       tone,
       document_title,
       status,
+      persist,
     });
   } catch (err) {
     if (['DOCUMENT_AI_UNAVAILABLE', 'PROFILE_CONTEXT_UNAVAILABLE'].includes(err.code)) {

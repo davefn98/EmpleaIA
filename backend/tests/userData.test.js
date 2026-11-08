@@ -89,6 +89,24 @@ test('activity: sin datos responde 200 con arrays vacíos (vacío ≠ error)', a
   assert.deepEqual(res.body.cvs, []);
 });
 
+test('borradores e historial muestran el saludo con ambos formatos antiguos de carta', async () => {
+  const body = 'Estimado equipo de selección:\n\nCarta de prueba.\n\nAda Lovelace';
+  const letter = {
+    id: 'letter-1',
+    created_at: '2026-11-07T02:00:00Z',
+    letter_content: `Ada Lovelace\n[Tu dirección]\n[Tu correo electrónico]\n[Tu número de teléfono]\n[Fecha]\n\nEquipo de Selección de Acme\n[Dirección de la empresa]\n\n${body}`,
+  };
+  const shorter = { ...letter, id: 'letter-2', letter_content: `[Fecha]\nEquipo de Selección\nAcme\n\n${body}\n[Teléfono]` };
+  const previousAutoDate = { ...letter, id: 'letter-3', letter_content: `6 de noviembre de 2026\n\n${body}` };
+  const custom = { ...letter, id: 'letter-4', letter_content: 'Lima, 4 de noviembre de 2026\r\n\r\nCarta con fecha editada.' };
+  const db = fakeDb({ cover_letters: { data: [letter, shorter, previousAutoDate, custom], error: null } });
+  for (const path of ['/user-snapshot/:userId', '/activity/:userId']) {
+    const res = await runHandler(path, db);
+    assert.deepEqual(res.body.letters.map((item) => item.letter_content), [body, body, body, custom.letter_content]);
+  }
+  assert.match(letter.letter_content, /\[Fecha\]/);
+});
+
 test('activity: error de consulta responde 400 ACTIVITY_QUERY_FAILED', async () => {
   const db = fakeDb({ interviews: { data: null, error: { message: 'boom' } } });
   const res = await runHandler('/activity/:userId', db);

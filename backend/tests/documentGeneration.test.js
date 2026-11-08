@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 process.env.ENCRYPTION_KEY = 'a'.repeat(64);
 const { generateLetter } = await import('../services/letterService.js');
 const { fullProfileUpdateSchema } = await import('../validators/profileValidator.js');
+const { letterGenerateSchema } = await import('../validators/letterValidator.js');
 
 function database({ readError = false, saveError = false } = {}) {
   const saved = [];
@@ -30,8 +31,22 @@ test('la carta recibe responsabilidades completas, formación y certificaciones 
   assert.equal(result.letterContent, db.saved[0].letter_content);
 });
 
-test('un fallo o respuesta vacía de IA no crea ni guarda una carta por plantilla', async () => {
-  for (const aiGenerate of [async () => { throw new Error('provider unavailable'); }, async () => '  ']) {
+test('generar y regenerar la vista previa reemplaza el resultado sin crear cartas guardadas', async () => {
+  const db = database();
+  const input = letterGenerateSchema.parse({ ...request, persist: false });
+  assert.equal(input.persist, false);
+
+  const first = await generateLetter({ ...input, userId: request.userId, db, aiGenerate: async () => 'Primera carta' });
+  const second = await generateLetter({ ...input, userId: request.userId, db, aiGenerate: async () => 'Carta regenerada' });
+  assert.equal(first.letterContent, 'Primera carta');
+  assert.equal(second.letterContent, 'Carta regenerada');
+  assert.equal(first.letterId, null);
+  assert.equal(second.letterId, null);
+  assert.deepEqual(db.saved, []);
+});
+
+test('un fallo, una respuesta vacía o solo marcadores no guardan una carta', async () => {
+  for (const aiGenerate of [async () => { throw new Error('provider unavailable'); }, async () => '  ', async () => '[Fecha]\n[Teléfono]']) {
     const db = database();
     await assert.rejects(generateLetter({ ...request, db, aiGenerate }), { code: 'DOCUMENT_AI_UNAVAILABLE' });
     assert.equal(db.saved.length, 0);
@@ -51,6 +66,18 @@ test('si falla guardar una carta ya generada se conserva su texto con aviso y si
   assert.equal(result.letterId, null);
   assert.equal(result.letterContent, 'Carta generada que debe conservarse');
   assert.ok(result.warning);
+});
+
+test('la carta generada empieza en el saludo y omite bloques de plantilla', async () => {
+  const db = database();
+  const result = await generateLetter({
+    ...request,
+    db,
+    aiGenerate: async () => 'Ada Lovelace\n[Tu dirección]\n[Fecha]\n\nEquipo de Selección\nAcme\n\nEstimado equipo de selección:\n\nCarta de prueba.\n\nAda Lovelace\n[Teléfono]\n[Correo Electrónico]',
+  });
+
+  assert.equal(result.letterContent, 'Estimado equipo de selección:\n\nCarta de prueba.\n\nAda Lovelace');
+  assert.equal(result.letterContent, db.saved[0].letter_content);
 });
 
 test('el contrato atómico admite los campos de perfil que antes se perdían', () => {

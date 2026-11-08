@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Menu, Sun, Moon } from 'lucide-react';
+import { Menu } from 'lucide-react';
+import ThemeToggle from './ThemeToggle';
 import UserMenu from './UserMenu';
 
 export default function Header({ isMobile, isSidebarCollapsed, title, subtitle, user, profile, onNavigate, onSignOut, onMenuClick, theme, onToggleTheme }) {
@@ -32,15 +33,7 @@ export default function Header({ isMobile, isSidebarCollapsed, title, subtitle, 
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Botón de cambio de tema */}
-          <button
-            type="button"
-            onClick={onToggleTheme}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 shadow-sm transition-colors hover:bg-slate-105 dark:hover:bg-slate-805 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-            aria-label="Cambiar tema"
-          >
-            {theme === 'dark' ? <Sun className="h-4.5 w-4.5 text-amber-500" /> : <Moon className="h-4.5 w-4.5" />}
-          </button>
+          <ThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
 
           <div className="relative">
             <button

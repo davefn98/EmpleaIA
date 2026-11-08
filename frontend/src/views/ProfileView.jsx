@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../utils/supabaseClient';
+import { apiRequest } from '../utils/api';
 import { loadUserSnapshot } from '../utils/userDataApi';
+import { protectUnsavedChanges } from '../utils/unsavedChanges';
 import { 
   User, 
   Briefcase, 
@@ -15,8 +17,70 @@ import {
 import ProgressIndicator from '../components/common/ProgressIndicator';
 import EmptyState from '../components/common/EmptyState';
 import ProfileSectionTabs from '../components/common/ProfileSectionTabs';
+import { useNotification } from '../components/common/notificationContext';
 
-export default function ProfileView({ navigateTo }) {
+const personalFields = [
+  { key: 'first_name', label: 'Nombres', required: true, maxLength: 300 },
+  { key: 'last_name', label: 'Apellidos', required: true, maxLength: 300 },
+  { key: 'contact_email', label: 'Correo de contacto', required: true, type: 'email', maxLength: 320 },
+  { key: 'phone', label: 'Teléfono', required: true, type: 'tel' },
+  { key: 'location', label: 'Ubicación' },
+  { key: 'career', label: 'Carrera o profesión', maxLength: 300 },
+  { key: 'linkedin', label: 'LinkedIn' },
+];
+const bioField = { key: 'bio', label: 'Perfil profesional', multiline: true, maxLength: 5000 };
+
+function InlineProfileField({ field, value, editing, blocked, onEdit, onChange, onCancel, onSave }) {
+  const { key, label, required, type, multiline, maxLength = 500 } = field;
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        aria-label={`Editar ${label.toLowerCase()}: ${value || 'Sin registrar'}`}
+        disabled={blocked}
+        onClick={() => onEdit(field, value)}
+        className="group flex w-full items-start gap-2 rounded-md text-left text-sm text-slate-800 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-indigo-500 disabled:cursor-default dark:text-slate-200 dark:hover:text-indigo-300"
+      >
+        <span className="min-w-0 whitespace-pre-wrap wrap-break-word">
+          {value || (multiline ? 'Sin descripción profesional registrada.' : 'Sin registrar')}
+        </span>
+        <Edit3 aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500 group-hover:text-inherit dark:text-slate-400" />
+      </button>
+    );
+  }
+
+  const Input = multiline ? 'textarea' : 'input';
+  return (
+    <form className="space-y-2" onSubmit={onSave}>
+      <Input
+        aria-label={label}
+        aria-invalid={Boolean(editing.error)}
+        aria-describedby={editing.error ? `profile-inline-${key}-error` : undefined}
+        type={type}
+        rows={multiline ? 4 : undefined}
+        value={editing.value}
+        required={required}
+        maxLength={maxLength}
+        disabled={editing.saving}
+        autoFocus
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 focus:outline-2 focus:outline-indigo-500 aria-invalid:border-rose-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:aria-invalid:border-rose-500"
+      />
+      {editing.error && <p id={`profile-inline-${key}-error`} role="alert" className="text-xs text-rose-700 dark:text-rose-400">{editing.error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <button type="submit" disabled={editing.saving || editing.value.trim() === value.trim()} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+          {editing.saving ? 'Guardando…' : 'Guardar'}
+        </button>
+        <button type="button" disabled={editing.saving} onClick={onCancel} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200">
+          Cancelar
+        </button>
+      </div>
+    </form>
+  );
+}
+
+export default function ProfileView({ navigateTo, onProfileSaved }) {
+  const { toast, showConfirm } = useNotification();
   const [profile, setProfile] = useState(null);
   const [academic, setAcademic] = useState([]);
   const [work, setWork] = useState([]);
@@ -25,6 +89,35 @@ export default function ProfileView({ navigateTo }) {
   const [profileMissing, setProfileMissing] = useState(false);
   const [activeTab, setActiveTab] = useState('personal');
   const [reloadKey, setReloadKey] = useState(0);
+  const [editing, setEditing] = useState(null);
+  const confirmedExit = useRef(false);
+  const dirty = Boolean(editing && editing.value.trim() !== editing.original.trim());
+  const saving = Boolean(editing?.saving);
+
+  useEffect(() => {
+    if (!dirty) return;
+    return protectUnsavedChanges(window, (path) => {
+      if (confirmedExit.current) return true;
+      if (saving) return false;
+      showConfirm({
+        title: 'Tu perfil tiene cambios sin guardar',
+        message: 'Puedes seguir editando o salir sin guardar estos cambios.',
+        confirmLabel: 'Salir sin guardar',
+        cancelLabel: 'Seguir aquí',
+        variant: 'warning',
+        onConfirm: () => {
+          confirmedExit.current = true;
+          try {
+            navigateTo(path);
+            setEditing(null);
+          } finally {
+            confirmedExit.current = false;
+          }
+        },
+      });
+      return false;
+    });
+  }, [dirty, navigateTo, saving, showConfirm]);
 
   useEffect(() => {
     const fetchProfileData = async () => {
@@ -73,6 +166,28 @@ export default function ProfileView({ navigateTo }) {
 
   const handleEditRedirect = () => {
     navigateTo('/profile/edit');
+  };
+
+  const saveInlineField = async (event) => {
+    event.preventDefault();
+    if (!dirty || saving) return;
+    const { field } = editing;
+    const value = editing.value.trim();
+    if (field.required && !value) {
+      setEditing({ ...editing, error: 'Completa este campo para guardar.' });
+      return;
+    }
+    setEditing({ ...editing, saving: true, error: '' });
+    try {
+      const { profile: savedProfile } = await apiRequest(`/profile/${profile.id}`, 'PUT', { [field.key]: value });
+      if (!savedProfile) throw new Error('Faltan los datos guardados.');
+      setProfile(savedProfile);
+      onProfileSaved(savedProfile);
+      setEditing(null);
+      toast.success('Perfil guardado.');
+    } catch {
+      setEditing({ ...editing, saving: false, error: 'No se pudo guardar este cambio. Intenta de nuevo.' });
+    }
   };
 
   if (loading) {
@@ -139,14 +254,23 @@ export default function ProfileView({ navigateTo }) {
     { label: 'Habilidades', completed: isSkillsComplete },
   ];
 
-  const personalFields = [
-    { label: 'Nombres y apellidos', value: [profile?.first_name, profile?.last_name].filter(Boolean).join(' ') },
-    { label: 'Correo de contacto', value: profile?.contact_email ?? profile?.email },
-    { label: 'Teléfono', value: profile?.phone },
-    { label: 'Ubicación', value: profile?.location },
-    { label: 'Carrera o profesión', value: profile?.career },
-    { label: 'LinkedIn', value: profile?.linkedin || profile?.linkedin_url },
-  ];
+  const renderField = (field) => {
+    let value = profile?.[field.key];
+    if (field.key === 'contact_email') value = profile?.contact_email ?? profile?.email;
+    if (field.key === 'linkedin') value = profile?.linkedin ?? profile?.linkedin_url;
+    return (
+      <InlineProfileField
+        field={field}
+        value={value || ''}
+        editing={editing?.field.key === field.key ? editing : null}
+        blocked={Boolean(editing)}
+        onEdit={(nextField, currentValue) => setEditing({ field: nextField, value: currentValue, original: currentValue })}
+        onChange={(nextValue) => setEditing({ ...editing, value: nextValue, error: '' })}
+        onCancel={() => setEditing(null)}
+        onSave={saveInlineField}
+      />
+    );
+  };
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
       <div className="mx-auto w-full max-w-[1600px]">
@@ -181,10 +305,10 @@ export default function ProfileView({ navigateTo }) {
                 </div>
 
                 <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-                  {personalFields.map(({ label, value }) => (
-                    <div key={label} className="min-w-0">
-                      <dt className="text-xs text-slate-600 dark:text-slate-400">{label}</dt>
-                      <dd className="mt-1 text-sm font-medium text-slate-800 wrap-break-word dark:text-slate-200">{value || 'Sin registrar'}</dd>
+                  {personalFields.map((field) => (
+                    <div key={field.key} className="min-w-0">
+                      <dt className="text-xs text-slate-600 dark:text-slate-400">{field.label}</dt>
+                      <dd className="mt-1 font-medium">{renderField(field)}</dd>
                     </div>
                   ))}
                 </dl>
@@ -198,9 +322,7 @@ export default function ProfileView({ navigateTo }) {
                     <h3 className="text-sm font-bold text-slate-900">Perfil profesional</h3>
                   </div>
                 </div>
-                <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap wrap-break-word dark:text-slate-300">
-                  {profile?.bio || 'Sin descripción profesional registrada. Edita tu perfil para completarlo.'}
-                </p>
+                {renderField(bioField)}
               </div>
 
             </div>
