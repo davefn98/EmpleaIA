@@ -282,26 +282,21 @@ router.post('/interview/start', requireAuth, async (req, res) => {
     console.warn('[/interview/start] No se pudo cargar historial de preguntas:', histErr.message);
   }
 
-  // 3b. Limpieza de entrevistas activas previas de forma segura (evita sesiones duplicadas)
-  try {
-    const { data: activePrev } = await supabaseClient
-      .from('interviews')
-      .select('id')
-      .eq('profile_id', profileId)
-      .eq('status', 'active');
+  const { data: activeInterviews, error: activeError } = await supabaseClient
+    .from('interviews')
+    .select('id')
+    .eq('profile_id', profileId)
+    .eq('status', 'active')
+    .limit(1);
 
-    if (activePrev?.length) {
-      for (const act of activePrev) {
-        await closeInterviewSession({
-          interviewId: act.id,
-          userId: profileId,
-          action: 'abandon',
-          userScopedDb: supabaseClient
-        });
-      }
-    }
-  } catch (cleanErr) {
-    console.warn('[/interview/start] Advertencia durante limpieza de entrevistas activas previas:', cleanErr.message);
+  if (activeError) {
+    return res.status(500).json({ error: 'No se pudieron consultar tus entrevistas en curso.' });
+  }
+  if (activeInterviews?.length) {
+    return res.status(409).json({
+      code: 'INTERVIEW_ALREADY_ACTIVE',
+      error: 'Retoma o pausa tu entrevista en curso antes de iniciar otra.'
+    });
   }
 
   // 4. Crear registro de entrevista (status=active)
@@ -909,29 +904,49 @@ router.post('/interview/resume', requireAuth, async (req, res) => {
   if (interview.profile_id !== req.user.id) {
     return res.status(403).json({ error: 'No tienes permiso para reanudar esta entrevista.' });
   }
-  if (interview.status !== 'paused') {
-    return res.status(400).json({ error: 'Solo se puede reanudar una entrevista pausada.' });
+  if (!['active', 'paused'].includes(interview.status)) {
+    return res.status(409).json({ error: 'Esta entrevista ya no se puede continuar.' });
   }
 
-  const { data: updated, error: updateErr } = await supabaseClient
-    .from('interviews')
-    .update({ status: 'active' })
-    .eq('id', interviewId)
-    .select('*')
-    .single();
-
-  if (updateErr) {
-    console.error('[/interview/resume] Error:', updateErr.message);
-    return res.status(500).json({ error: 'No se pudo reanudar la entrevista.' });
-  }
-
-  const { data: messages } = await supabaseClient
+  const { data: messages, error: messagesError } = await supabaseClient
     .from('interview_messages')
     .select('*')
     .eq('interview_id', interviewId)
     .order('created_at', { ascending: true });
 
-  return res.json({ success: true, interview: updated, responseMode:resolveInterviewResponseMode(updated.profile_summary), messages: messages || [] });
+  if (messagesError) {
+    return res.status(500).json({ error: 'No se pudo recuperar la conversación. Intenta de nuevo.' });
+  }
+  if (!messages?.some(message => message.sender === 'ai' && message.message_content?.trim())) {
+    return res.status(409).json({ error: 'Esta entrevista todavía no tiene una pregunta guardada.' });
+  }
+
+  let resumed = interview;
+  if (interview.status === 'paused') {
+    const { data: updated, error: updateErr } = await supabaseClient
+      .from('interviews')
+      .update({ status: 'active' })
+      .eq('id', interviewId)
+      .eq('status', 'paused')
+      .select('*')
+      .maybeSingle();
+
+    if (updateErr) {
+      console.error('[/interview/resume] Error:', updateErr.message);
+      return res.status(500).json({ error: 'No se pudo reanudar la entrevista.' });
+    }
+    if (!updated) {
+      return res.status(409).json({ error: 'Cambió el estado de la entrevista. Vuelve a intentarlo.' });
+    }
+    resumed = updated;
+  }
+
+  return res.json({
+    success: true,
+    interview: resumed,
+    responseMode: resolveInterviewResponseMode(resumed.profile_summary, messages),
+    messages
+  });
 });
 
 // ─── POST /interview/finish ────────────────────────────────────────────────

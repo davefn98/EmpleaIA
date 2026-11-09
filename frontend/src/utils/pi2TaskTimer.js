@@ -1,7 +1,7 @@
 import { TASKS } from './pi2Validation.js';
 
 const timerKey = (userId) => `empleaia_pi2_timer_${userId}`;
-function readPilotTimer(userId) {
+export function readPilotTimer(userId) {
   if (!userId) return null;
   try {
     const timer = JSON.parse(sessionStorage.getItem(timerKey(userId)) || 'null');
@@ -13,7 +13,12 @@ function readPilotTimer(userId) {
   }
 }
 
-export async function flushFinishedLegacyTimer(supabase, userId) {
+export function writePilotTimer(userId, timer) {
+  if (timer) sessionStorage.setItem(timerKey(userId), JSON.stringify(timer));
+  else sessionStorage.removeItem(timerKey(userId));
+}
+
+export async function saveFinishedPilotTimer(supabase, userId) {
   const timer = readPilotTimer(userId);
   if (!timer || timer.finishedAt === null) return;
   const { error } = await supabase.rpc('pi2_save_timed_task', {
@@ -26,5 +31,5 @@ export async function flushFinishedLegacyTimer(supabase, userId) {
   });
   if (error) throw error;
   const current = readPilotTimer(userId);
-  if (current?.startedAt === timer.startedAt && current?.finishedAt === timer.finishedAt) sessionStorage.removeItem(timerKey(userId));
+  if (current?.startedAt === timer.startedAt && current?.finishedAt === timer.finishedAt) writePilotTimer(userId, null);
 }

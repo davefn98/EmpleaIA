@@ -10,7 +10,18 @@ const display = (value, unit) => value === null ? 'Sin datos' : `${format.format
 const projectFormulas = {
   I1: 'Elementos elaborados / elementos planificados × 100',
   I2: 'Entregables completados / entregables planificados × 100',
-  I7: 'Sprints completados según plan / sprints planificados × 100',
+};
+const thesisFile = 'TB2-251-215-01-FY-u202417845-u20151b829.docx';
+const thesisReferences = {
+  'Matriz de Vester': 'Tabla 1, Matriz de Vester',
+  'Situación problemática': 'Sección 1.1.3, Situación problemática',
+  'Campo de acción': 'Sección 1.1.2, Campo de acción',
+  'Objeto de estudio': 'Sección 1.1.1, Objeto de estudio',
+  'Incepción Ágil': 'Sección 3.1, Incepción Ágil',
+  'Arquitectura C4 — nivel 1': 'Sección 3.2.2, Figura 22, contexto de la arquitectura técnica específica',
+  'Arquitectura C4 — nivel 2': 'Sección 3.2.2, Figura 23, vista de contenedores',
+  'Arquitectura C4 — nivel 3': 'Sección 3.2.2, Figura 24, componentes del Backend API',
+  'Product Backlog': 'Sección 3.1.7, Tabla 15, Product Backlog Base',
 };
 const artifactLabels = { cv: 'CV', letter: 'Carta', feedback: 'Retroalimentación de entrevista' };
 
@@ -48,10 +59,6 @@ const previousSurvey = {
       result: 'La confianza para postular pasó de 3,04 a 4,44/5. De 27 personas, 18 mejoraron, 8 se mantuvieron y 1 bajó.',
       detail: 'Para cerrar el I6, se requiere medir la confianza para afrontar una entrevista antes y después de la simulación. El formulario reúne ambas valoraciones en una sola respuesta.',
     },
-    I7: {
-      status: 'Requiere evidencia documental',
-      result: 'Se verifica con las actas y los incrementos de los sprints en Evidencias del proyecto.',
-    },
   },
   usability: { score: 75.58, completeResponses: 26, missingItem: 9 },
 };
@@ -88,27 +95,27 @@ function PreviousSurvey() {
   </section>;
 }
 
-function Metric({ indicator, result, ready = true, sample, children }) {
+function Metric({ indicator, result, sample, children }) {
   const definition = PILOT_INDICATORS[indicator];
-  const { objective, title, unit, operator, target } = definition;
-  const meets = operator === '≤' ? result.value <= target : result.value >= target;
+  const { objective, title, unit } = definition;
   return <article className={panel}>
     <h3 className="font-bold">{indicator} · {title} ({objective})</h3>
     <p className="mt-1 text-xl font-black">{display(result.value, unit)}</p>
     <p className="text-sm">Meta {formatPilotTarget(definition)} · {sample}</p>
-    <p className="my-2 text-xs font-semibold">{result.value === null || !ready ? 'Evidencia incompleta' : meets ? 'Alcanza la meta en la muestra registrada' : 'La muestra registrada queda fuera de la meta'}</p>
+    <p className="my-2 text-xs font-semibold">{result.meetsTarget === null ? 'Evidencia incompleta' : result.meetsTarget ? 'Alcanza la meta en la muestra registrada' : 'La muestra registrada queda fuera de la meta'}</p>
     {children}
   </article>;
 }
 
 function EvidenceForm({ indicator, item, busy, onSave }) {
+  const suggested = item && Object.hasOwn(thesisReferences, item.title) ? thesisReferences[item.title] : '';
   return <form className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-2 dark:border-slate-700" onSubmit={(event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     onSave({ ...(item && { id: item.id }), indicator, title: form.get('title').trim(), reference: form.get('reference').trim(), completed: form.has('completed') });
   }}>
     <input name="title" aria-label="Elemento planificado" placeholder="Elemento planificado" maxLength={200} required className={input} defaultValue={item?.title} />
-    <input name="reference" aria-label="Referencia de evidencia" placeholder="Acta, sección, versión o enlace" maxLength={600} className={`${input} min-w-44 flex-1`} defaultValue={item?.reference} />
+    <input name="reference" aria-label="Referencia de evidencia" placeholder="Acta, sección, versión o enlace" maxLength={600} className={`${input} min-w-44 flex-1`} defaultValue={item?.reference || (suggested ? `${thesisFile} · ${suggested}` : '')} />
     <label className="flex gap-1 text-sm"><input type="checkbox" name="completed" defaultChecked={item?.completed} /> Verificado</label>
     <button type="submit" className={button} disabled={busy}>{item ? 'Actualizar' : 'Agregar'}</button>
   </form>;
@@ -158,14 +165,37 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
   const generations = attempts.filter(({ document_type }) => ['cv', 'letter', 'profile_import'].includes(document_type));
   const documentWorkflow = attempts.filter(({ document_type }) => document_type.endsWith('_preparation') || document_type.endsWith('_pdf'));
   const reviews = data.reviews.filter((row) => codes.has(row.participant_code));
-  const metrics = summarizePilot(participants, times, generations, data.evidence);
+  const evidence = data.evidence.filter((item) => Object.hasOwn(projectFormulas, item.indicator));
+  const metrics = summarizePilot(participants, times, generations, evidence);
 
-  const exportReport = () => {
-    const payload = { build, extracted_at: new Date().toISOString(), metrics, participants, times, generations, documentWorkflow, evidence: data.evidence, reviews, previousSurvey };
+  const generationTarget = PILOT_INDICATORS.I4.target;
+  const results = {
+    I3: { ...metrics.preparationTotal, meetsTarget: metrics.preparationTotal.n ? metrics.preparationTotal.value >= PILOT_INDICATORS.I3.target : null },
+    I4: {
+      ...metrics.generation,
+      cv: metrics.cv,
+      letter: metrics.letter,
+      meetsTarget: metrics.cv.n && metrics.letter.n ? [metrics.cv, metrics.letter].every(({ value }) => value <= generationTarget) : null,
+    },
+    I5: { ...metrics.satisfaction, meetsTarget: metrics.satisfaction.n ? metrics.satisfaction.value >= PILOT_INDICATORS.I5.target : null },
+    I6: { ...metrics.confidence, meetsTarget: metrics.confidence.n ? metrics.confidence.value >= PILOT_INDICATORS.I6.target : null },
+  };
+
+  const exportReport = (aggregateOnly) => {
+    const summary = {
+      build: build ?? null,
+      extracted_at: new Date().toISOString(),
+      participant_count: participants.length,
+      indicators: PILOT_INDICATORS,
+      results,
+      metrics,
+      previousSurvey,
+    };
+    const payload = aggregateOnly ? summary : { ...summary, participants, times, generations, documentWorkflow, evidence, reviews };
     const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'evidencias-validacion-pi2.json';
+    link.download = aggregateOnly ? 'resumen-validacion-pi2.json' : 'evidencias-validacion-pi2.json';
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -180,11 +210,12 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
           <select value={build} onChange={(event) => setSelectedBuild(event.target.value)} className={input}>{builds.map((version) => <option key={version}>{version}</option>)}</select>
         </label>}
         <span className="text-sm">{participants.length} participantes inscritos en la muestra</span>
-        <button type="button" className={button} onClick={exportReport}>Exportar evidencia</button>
+        <button type="button" className={button} onClick={() => exportReport(true)}>Exportar resumen para la tesis</button>
+        <button type="button" className={button} onClick={() => exportReport(false)}>Exportar evidencia</button>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Metric indicator="I3" result={metrics.preparationTotal} sample={`${metrics.preparationTotal.n} participantes con las tres tareas emparejadas`}>
+        <Metric indicator="I3" result={results.I3} sample={`${metrics.preparationTotal.n} participantes con las tres tareas emparejadas`}>
           <div className="overflow-x-auto"><table className="w-full text-left text-xs">
             <thead><tr><th>Tarea</th><th>Pares</th><th>Manual</th><th>EmpleaIA</th><th>Reducción</th></tr></thead>
             <tbody>{metrics.preparation.map((item) => <tr key={item.task} className="border-t border-slate-200 dark:border-slate-700">
@@ -193,21 +224,21 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
           </table></div>
           <p className="mt-2 text-xs">((promedio manual − promedio con EmpleaIA) / promedio manual) × 100. El total suma las tres tareas de cada participante con datos completos.</p>
         </Metric>
-        <Metric indicator="I4" result={metrics.generation} ready={metrics.cv.n > 0 && metrics.letter.n > 0} sample={`${metrics.generation.n} con resultado · ${metrics.generation.failures} con error`}>
+        <Metric indicator="I4" result={results.I4} sample={`${metrics.generation.n} con resultado · ${metrics.generation.failures} con error`}>
           <ul className="space-y-1 text-sm">
             {[['CV', metrics.cv], ['Carta', metrics.letter]].map(([label, result]) => <li key={label}>
               {label} · {display(result.value, ' s')} · {result.n} con resultado · {result.failures} con error
               {result.value !== null && <span> · {result.value <= PILOT_INDICATORS.I4.target ? 'Dentro de la meta' : 'Supera el tiempo meta'}</span>}
             </li>)}
           </ul>
-          <p className="mt-2 text-xs">El promedio general reúne los intentos de CV y carta con vista previa disponible. Los errores se registran por separado.</p>
+          <p className="mt-2 text-xs">El promedio general reúne los intentos de CV y carta con vista previa disponible. La meta se comprueba por tipo de documento. Los errores se registran por separado.</p>
           <div className="mt-3 border-t border-slate-200 pt-2 dark:border-slate-700">
             <h4 className="text-sm font-bold">Importación de CV en Mi perfil</h4>
             <p className="text-sm">{display(metrics.profileImport.value, ' s')} de promedio · {metrics.profileImport.n} con resultado · {metrics.profileImport.failures} con error</p>
             <p className="mt-1 text-xs">Medición complementaria desde «Extraer con IA» hasta la vista previa de los datos extraídos.</p>
           </div>
         </Metric>
-        <Metric indicator="I5" result={metrics.satisfaction} sample={`${metrics.satisfaction.n} respuestas válidas · ${participants.length - metrics.satisfaction.n} faltantes`}>
+        <Metric indicator="I5" result={results.I5} sample={`${metrics.satisfaction.n} respuestas válidas · ${participants.length - metrics.satisfaction.n} faltantes`}>
           <p className="text-xs">Promedio de las calificaciones de 0 a 10 registradas después del uso.</p>
           {metrics.satisfaction.n > 0 && <ol aria-label="Distribución de satisfacción" className="mt-3 grid grid-cols-11 gap-1 text-center text-[10px]">
             {metrics.satisfaction.distribution.map((count, score) => <li key={score} aria-label={`${score}/10: ${count} respuestas`}>
@@ -216,7 +247,7 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
             </li>)}
           </ol>}
         </Metric>
-        <Metric indicator="I6" result={metrics.confidence} sample={`${metrics.confidence.n} pares válidos · ${participants.length - metrics.confidence.n} faltantes`}>
+        <Metric indicator="I6" result={results.I6} sample={`${metrics.confidence.n} pares válidos · ${participants.length - metrics.confidence.n} faltantes`}>
           <p className="mb-1 text-sm">Antes: {display(metrics.confidence.before, '/10')} · Después: {display(metrics.confidence.after, '/10')}</p>
           <p className="text-xs">Promedio de las diferencias individuales entre las respuestas posteriores y previas a la entrevista, en escala 0–10.</p>
         </Metric>
@@ -229,7 +260,7 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
 
     <section className="space-y-3">
       <h2 className="text-lg font-bold">Evidencias del proyecto</h2>
-      <p className="text-sm">Registra primero la línea base completa. Marca un elemento verificado cuando tengas su evidencia de revisión. Los porcentajes reflejan los elementos registrados.</p>
+      <p className="text-sm">Registra primero la línea base completa. Los campos sin referencia muestran sugerencias del TB2 cuando están disponibles. Revisa cada referencia y marca «Verificado» antes de guardar. Los porcentajes reflejan los elementos registrados.</p>
       {Object.entries(projectFormulas).map(([indicator, formula]) => {
         const definition = PILOT_INDICATORS[indicator];
         const result = metrics.evidence[indicator];
@@ -242,7 +273,7 @@ export default function PilotReport({ data, busy, saveEvidence, saveQuality }) {
           <p className="text-sm">{result.n}/{result.total} verificados · {display(result.value, definition.unit)} · Meta {formatPilotTarget(definition)}</p>
           <p className="text-xs font-semibold">{status}</p>
           <p className="text-xs">{formula}</p>
-          {data.evidence.filter((item) => item.indicator === indicator).map((item) => <EvidenceForm key={item.id} item={item} indicator={indicator} busy={busy} onSave={saveEvidence} />)}
+          {evidence.filter((item) => item.indicator === indicator).map((item) => <EvidenceForm key={item.id} item={item} indicator={indicator} busy={busy} onSave={saveEvidence} />)}
           <EvidenceForm key={`new-${result.total}`} indicator={indicator} busy={busy} onSave={saveEvidence} />
         </article>;
       })}

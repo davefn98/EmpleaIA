@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canSubmitPilotSatisfaction, summarizePilot } from '../src/utils/pi2Validation.js';
-import { flushFinishedLegacyTimer } from '../src/utils/pi2TaskTimer.js';
+import { getPilotSatisfactionProgress, summarizePilot } from '../src/utils/pi2Validation.js';
+import { saveFinishedPilotTimer } from '../src/utils/pi2TaskTimer.js';
 import { completeDocumentVisit, markDocumentGenerated, startDocumentVisit } from '../src/utils/documentPreparationTiming.js';
 
 test('I3 empareja métodos por participante y requiere las tres tareas para el total', () => {
@@ -67,10 +67,10 @@ test('solo sincroniza mediciones anteriores terminadas y conserva el final al re
     else delete globalThis.sessionStorage;
   });
 
-  await flushFinishedLegacyTimer({ rpc: () => assert.fail('La medición sigue abierta') }, 'B');
-  await assert.rejects(flushFinishedLegacyTimer({ rpc: async () => ({ error: new Error('Red') }) }, 'A'), /Red/);
+  await saveFinishedPilotTimer({ rpc: () => assert.fail('La medición sigue abierta') }, 'B');
+  await assert.rejects(saveFinishedPilotTimer({ rpc: async () => ({ error: new Error('Red') }) }, 'A'), /Red/);
   assert.equal(values.get(keyA), JSON.stringify(timer));
-  await flushFinishedLegacyTimer({ rpc: async (name, data) => {
+  await saveFinishedPilotTimer({ rpc: async (name, data) => {
     assert.equal(name, 'pi2_save_timed_task');
     assert.equal(data.p_started_at, new Date(timer.startedAt).toISOString());
     assert.equal(data.p_finished_at, new Date(timer.finishedAt).toISOString());
@@ -80,19 +80,19 @@ test('solo sincroniza mediciones anteriores terminadas y conserva el final al re
   assert.equal(values.has(keyB), true);
 });
 
-test('I5 se habilita con dos documentos generados y la respuesta posterior', () => {
+test('I5 distingue el requisito pendiente y reconoce mediciones anteriores completas', () => {
   const participant = { confidence_after: 0 };
   const attempts = [
     { document_type: 'cv', success: true },
     { document_type: 'profile_import', success: true },
     { document_type: 'letter', success: false },
   ];
-  assert.equal(canSubmitPilotSatisfaction(participant, attempts, []), false);
+  assert.deepEqual(getPilotSatisfactionProgress(participant, attempts, []), { cv: true, letter: false, confidenceAfter: true });
   attempts.push({ document_type: 'letter', success: true });
-  assert.equal(canSubmitPilotSatisfaction(participant, attempts, []), true);
-  assert.equal(canSubmitPilotSatisfaction({ confidence_after: null }, attempts, []), false);
+  assert.deepEqual(getPilotSatisfactionProgress(participant, attempts, []), { cv: true, letter: true, confidenceAfter: true });
+  assert.deepEqual(getPilotSatisfactionProgress({ confidence_after: null }, attempts, []), { cv: true, letter: true, confidenceAfter: false });
   const historicalTimes = ['cv', 'letter', 'interview'].map((task) => ({ task, method: 'platform' }));
-  assert.equal(canSubmitPilotSatisfaction(participant, [], historicalTimes), true);
+  assert.deepEqual(getPilotSatisfactionProgress(participant, [], historicalTimes), { cv: true, letter: true, confidenceAfter: true });
 });
 
 test('I5 e I6 conservan respuestas cero y excluyen faltantes; los indicadores de proyecto exigen respaldo', () => {
@@ -111,5 +111,6 @@ test('I5 e I6 conservan respuestas cero y excluyen faltantes; los indicadores de
   assert.equal(result.satisfaction.distribution[0], 1);
   assert.deepEqual(result.confidence, { value: -1, n: 2, before: 3, after: 2 });
   assert.deepEqual(result.evidence.I1, { n: 1, total: 2, value: 50 });
-  assert.equal(result.evidence.I7.value, null);
+  assert.equal(result.evidence.I2.value, null);
+  assert.deepEqual(Object.keys(result.evidence), ['I1', 'I2']);
 });

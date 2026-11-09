@@ -25,7 +25,6 @@ export const PILOT_INDICATORS = {
   I4: { objective: 'OE4', title: 'Tiempo promedio de generación de CV y carta', target: 30, unit: ' s', operator: '≤' },
   I5: { objective: 'OE4', title: 'Satisfacción con EmpleaIA', target: 7.5, unit: '/10', operator: '≥' },
   I6: { objective: 'OE4', title: 'Cambio de autoconfianza para la entrevista', target: 2, unit: ' puntos', operator: '≥' },
-  I7: { objective: 'OE3', title: 'Sprints completados según el plan', target: 80, unit: ' %', operator: '≥' },
 };
 
 export function formatPilotTarget({ operator, target, unit }) {
@@ -56,10 +55,14 @@ export function summarizeOperationTimes(attempts) {
   };
 }
 
-export function canSubmitPilotSatisfaction(participant, attempts, previousTimes) {
-  if (!valuePresent(participant.confidence_after)) return false;
-  return ['cv', 'letter'].every((type) => attempts.some((attempt) => attempt.document_type === type && attempt.success))
-    || Object.keys(TASKS).every((task) => previousTimes.some((row) => row.task === task && row.method === 'platform'));
+export function getPilotSatisfactionProgress(participant, attempts, previousTimes) {
+  const hasPreviousTasks = Object.keys(TASKS).every((task) => previousTimes.some((row) => row.task === task && row.method === 'platform'));
+  const hasGeneration = (type) => hasPreviousTasks || attempts.some((attempt) => attempt.document_type === type && attempt.success);
+  return {
+    cv: hasGeneration('cv'),
+    letter: hasGeneration('letter'),
+    confidenceAfter: valuePresent(participant.confidence_after),
+  };
 }
 
 export function summarizePilot(participants, times, generations, evidence) {
@@ -106,7 +109,7 @@ export function summarizePilot(participants, times, generations, evidence) {
       value: average(confidence.map((row) => row.confidence_after - row.confidence_before)), n: confidence.length,
       before: average(confidence.map((row) => row.confidence_before)), after: average(confidence.map((row) => row.confidence_after)),
     },
-    evidence: Object.fromEntries(['I1', 'I2', 'I7'].map((indicator) => {
+    evidence: Object.fromEntries(['I1', 'I2'].map((indicator) => {
       const group = evidence.filter((item) => item.indicator === indicator);
       const n = group.filter((item) => item.completed && item.reference.trim()).length;
       return [indicator, { n, total: group.length, value: group.length ? n / group.length * 100 : null }];

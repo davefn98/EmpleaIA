@@ -4,6 +4,7 @@ import { apiRequest } from '../utils/api';
 import { Clock, FileText, Mail, MessageSquare, Loader2, AlertCircle, X, ChevronRight, User, BookOpen, Briefcase, Award } from 'lucide-react';
 import InterviewConversationPanel from '../components/interview/InterviewConversationPanel';
 import { cvDraftPath } from '../utils/documentDraftRoute';
+import { isResumableInterview } from '../utils/interviewSession';
 
 const TYPE_LABEL = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
 const STATUS_LABEL = {
@@ -527,11 +528,19 @@ export default function ActivityHistory({ setActiveView, navigateTo }) {
               )}
 
               {selectedItem.kind === 'interview' && (
-                <button 
-                  onClick={() => { setSelectedItem(null); if (setActiveView) setActiveView('interviews'); }}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedItem(null);
+                    if (isResumableInterview(selectedItem)) {
+                      navigateTo(`/interviews/resume/${selectedItem.id}`);
+                    } else {
+                      setActiveView('interviews');
+                    }
+                  }}
                   className="bg-indigo-650 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-xl transition-all shadow-md shadow-indigo-600/10 cursor-pointer text-xs"
                 >
-                  Ir al Simulador de Entrevistas
+                  {isResumableInterview(selectedItem) ? 'Continuar esta entrevista' : 'Ir al Simulador de Entrevistas'}
                 </button>
               )}
             </div>

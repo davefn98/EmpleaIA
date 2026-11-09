@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useEffectEvent, useRef } from 'react';
 import { isFinishInterviewVoiceCommand } from '../utils/interviewVoiceCommands';
 import { supabase } from '../utils/supabaseClient';
 import { loadUserSnapshot } from '../utils/userDataApi';
@@ -9,7 +9,7 @@ import ConfirmDialog from '../components/common/ConfirmDialog';
 import InterviewConversationPanel from '../components/interview/InterviewConversationPanel';
 import InterviewChatInput from '../components/interview/InterviewChatInput';
 import AiInterviewerAvatar from '../components/interview/AiInterviewerAvatar';
-import { restoreInterviewResponses, interviewAverageScore, hasInterviewsToCompare, resolveInterviewResponseMode } from '../utils/interviewSession';
+import { restoreInterviewResponses, interviewAverageScore, hasInterviewsToCompare, isResumableInterview, resolveInterviewResponseMode } from '../utils/interviewSession';
 import { pickBestSpanishVoice, pickVoiceByPreference, VOICE_URI_KEY, VOICE_PREF_KEY } from '../utils/interviewVoice';
 import {
   MessageSquare,
@@ -31,11 +31,20 @@ const MIN_AUDIO_BLOB_SIZE = 3000;
 const MAX_RECORDING_SECONDS = 120;
 const ANSWER_SECONDS = 120;
 const INTERVIEW_TYPE_LABELS = { general: 'General', technical: 'Técnica', behavioral: 'Por competencias' };
+const DIFFICULTY_LABELS = { basic: 'Básico', intermediate: 'Intermedio', advanced: 'Avanzado' };
 
 const AUDIO_EMPTY_MESSAGE = 'No se detectó audio. Intenta hablar más cerca del micrófono o responde por escrito.';
 const AUDIO_TOO_SHORT_MESSAGE = 'Graba al menos 2 segundos para detectar tu voz o responde por escrito.';
 const MICROPHONE_BLOCKED_MESSAGE = 'Permite el micrófono en los permisos de este sitio y vuelve a intentarlo. También puedes responder por escrito.';
 const AVATAR_VARIANT_KEY = 'empleaia_avatar_variant';
+
+const interviewOwnerKey = (id) => `empleaia_interview_owner_${id}`;
+const isInterviewOwner = (owner) => Boolean(owner && localStorage.getItem(interviewOwnerKey(owner.id)) === owner.token);
+
+function withInterviewLock(id, request) {
+  // Las pestañas del mismo origen deben leer la sesión después de cualquier escritura en curso.
+  return navigator.locks ? navigator.locks.request(interviewOwnerKey(id), request) : request();
+}
 
 function InterviewerPicker({ value, onChange }) {
   return (
@@ -66,7 +75,7 @@ const getPermissionErrorMessage = (err) => {
 };
 
 
-export default function Interviews({ setActiveView }) {
+export default function Interviews({ setActiveView, requestedInterviewId, replaceCurrentPath }) {
   const { showConfirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -76,6 +85,7 @@ export default function Interviews({ setActiveView }) {
   const [sending, setSending] = useState(false);
   const [profile, setProfile] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [transferNotice, setTransferNotice] = useState('');
   // Error al CARGAR el snapshot del perfil (red/servidor): NO significa perfil incompleto
   const [profileLoadError, setProfileLoadError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -93,7 +103,7 @@ export default function Interviews({ setActiveView }) {
   const [completedEarly, setCompletedEarly] = useState(false);
 
   // Sesión de entrevista: reanudar / terminar / abandonar / check de dispositivos
-  const [pausedInterviews, setPausedInterviews] = useState([]);
+  const [resumableInterviews, setResumableInterviews] = useState([]);
   const [finishingInterview, setFinishingInterview] = useState(false);
   const [abandoning, setAbandoning] = useState(false);
 
@@ -189,6 +199,9 @@ export default function Interviews({ setActiveView }) {
   // Refs adicionales de sincronización de estado para callbacks asíncronos y bucles Web Audio API
   const userTextResponseRef = useRef(userTextResponse);
   const interviewIdRef = useRef(interviewId);
+  const interviewOwnerRef = useRef(null);
+  const resumeAttemptRef = useRef(null);
+  const attemptedHistoryResumeRef = useRef(null);
   const currentQuestionRef = useRef(currentQuestion);
   const interviewTypeRef = useRef(interviewType);
   const accumulatedExpressionsRef = useRef(accumulatedExpressions);
@@ -217,6 +230,19 @@ export default function Interviews({ setActiveView }) {
   useEffect(() => { questionCountRef.current = questionCount; }, [questionCount]);
   useEffect(() => { sessionResponsesRef.current = sessionResponses; }, [sessionResponses]);
   useEffect(() => { totalQuestionsRef.current = totalQuestions; }, [totalQuestions]);
+
+  const claimInterview = (id) => {
+    const owner = { id, token: crypto.randomUUID() };
+    localStorage.setItem(interviewOwnerKey(id), owner.token);
+    interviewOwnerRef.current = owner;
+    return owner;
+  };
+
+  const releaseInterview = () => {
+    const owner = interviewOwnerRef.current;
+    interviewOwnerRef.current = null;
+    if (isInterviewOwner(owner)) localStorage.removeItem(interviewOwnerKey(owner.id));
+  };
 
   useEffect(() => {
     if(interviewId) localStorage.setItem(`empleaia_interview_mode_${interviewId}`,isTextMode ? 'text' : 'voice');
@@ -332,7 +358,7 @@ export default function Interviews({ setActiveView }) {
       try {
         const snapshot = await loadUserSnapshot(session.user.id);
         setCanCompare(hasInterviewsToCompare(snapshot.interviews));
-        setPausedInterviews(snapshot.interviews.filter((interview) => interview.status === 'paused'));
+        setResumableInterviews(snapshot.interviews.filter(isResumableInterview));
         setProfile(snapshot.profile);
         setHasEducation(snapshot.academic.some((study) => study.institution?.trim() && study.degree?.trim()));
         const totalExp = snapshot.work.length;
@@ -375,6 +401,8 @@ export default function Interviews({ setActiveView }) {
         // Esta referencia es un contador de ciclos, no un nodo DOM; se compara intencionalmente.
         // eslint-disable-next-line react-hooks/exhaustive-deps
         if(initialLoadGenerationRef.current !== effectVersion) return;
+        resumeAttemptRef.current = null;
+        releaseInterview();
         clearInterval(timerRef.current);
         clearInterval(recordingTimerRef.current);
         clearTimeout(maxRecordingTimerRef.current);
@@ -394,7 +422,12 @@ export default function Interviews({ setActiveView }) {
   const needsMicrophoneChoice = microphoneAvailable && !needsInterviewSetup && microphonePermission === 'prompt' && prefersVoice === null;
   const microphoneSetupPending = microphoneAvailable && (microphonePermission === 'checking' || needsMicrophoneChoice);
   const startInText = !microphoneAvailable || microphonePermission === 'denied' || !(prefersVoice ?? (microphonePermission === 'granted'));
-  const newInterviewBlocked = starting || abandoning || needsInterviewSetup || microphoneSetupPending;
+  const hasActiveInterview = resumableInterviews.some((interview) => interview.status === 'active');
+  const requestedInterview = resumableInterviews.find((interview) => interview.id === requestedInterviewId);
+  const displayedInterviews = requestedInterview
+    ? [requestedInterview, ...resumableInterviews.filter((interview) => interview.id !== requestedInterviewId)]
+    : resumableInterviews;
+  const newInterviewBlocked = starting || abandoning || needsInterviewSetup || microphoneSetupPending || hasActiveInterview;
   const targetRequirementMessage = !hasTargetRole && !hasTargetDescription
     ? 'Faltan el puesto objetivo y su descripción.'
     : !hasTargetRole ? 'Falta el puesto objetivo.' : 'Falta la descripción del puesto objetivo.';
@@ -467,6 +500,7 @@ export default function Interviews({ setActiveView }) {
       recognitionRef.current = null;
     }
 
+    resolveBlobRef.current?.(null);
     // Resetear estados locales de audio y video
     resetAudioFlowState();
     cleanupAudioContext();
@@ -482,6 +516,29 @@ export default function Interviews({ setActiveView }) {
       setSessionResponses([]);
     }
   };
+
+  const handleInterviewOwnershipChange = useEffectEvent((event) => {
+    const owner = interviewOwnerRef.current;
+    if (!owner || event.key !== interviewOwnerKey(owner.id) || isInterviewOwner(owner)) return;
+
+    interviewOwnerRef.current = null;
+    clearInterval(timerRef.current);
+    cleanupInterviewSession(true);
+    setShowProgressLoader(false);
+    setIsAdvancingQuestion(false);
+    setErrorMsg('');
+    setTransferNotice(event.newValue
+      ? 'La entrevista continúa en otra pestaña. Tus respuestas enviadas siguen guardadas.'
+      : 'La entrevista cambió de estado en otra pestaña.');
+    setIntState('launcher');
+    setReloadKey((key) => key + 1);
+  });
+
+  useEffect(() => {
+    const onStorage = (event) => handleInterviewOwnershipChange(event);
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // LECTOR DE PREGUNTAS POR VOZ (HU03)
   const speakQuestion = (text, completePlayback) => {
@@ -546,6 +603,7 @@ export default function Interviews({ setActiveView }) {
   // Detener de forma proactiva la voz, cámara y micrófonos cuando la entrevista deja de estar activa
   useEffect(() => {
     if (intState !== 'active') {
+      releaseInterview();
       stopSpeaking();
       if (intState === 'launcher' || intState === 'results') {
         cleanupInterviewSession(false);
@@ -821,7 +879,8 @@ export default function Interviews({ setActiveView }) {
   const startRecordingMedia = async () => {
     const playback = readQuestionRef.current;
     const canCapture = () => playback === readQuestionRef.current && intStateRef.current === 'active'
-      && !isTextModeRef.current && !isPausedRef.current && !isSubmittingRef.current && !ignorePendingCallbacksRef.current;
+      && isInterviewOwner(interviewOwnerRef.current) && !isTextModeRef.current && !isPausedRef.current
+      && !isSubmittingRef.current && !ignorePendingCallbacksRef.current;
     if (!playback || playback.questionId !== questionId || !canCapture() || recordingStartPendingRef.current || isRecordingRef.current) return;
     recordingStartPendingRef.current = true;
     try {
@@ -1119,6 +1178,8 @@ export default function Interviews({ setActiveView }) {
       });
 
       if (data.success) {
+        claimInterview(data.interviewId);
+        setTransferNotice('');
         setInterviewId(data.interviewId);
         setCurrentQuestion(data.firstQuestion);
         setTotalQuestions(data.totalQuestions || 5);
@@ -1133,6 +1194,10 @@ export default function Interviews({ setActiveView }) {
         setIntState('active');
       }
     } catch (err) {
+      if (err.code === 'INTERVIEW_ALREADY_ACTIVE') {
+        setReloadKey((key) => key + 1);
+        return;
+      }
       if (err.code === 'INTERVIEW_SETUP_REQUIRED') {
         setSetupDialogDismissed(false);
         setReloadKey((key) => key + 1);
@@ -1184,7 +1249,8 @@ export default function Interviews({ setActiveView }) {
 
   // PAUSAR: conserva el progreso ya persistido y deja la sesión reanudable.
   const handlePauseInterview = async () => {
-    if (!interviewId) return;
+    const owner = interviewOwnerRef.current;
+    if (!interviewId || !isInterviewOwner(owner)) return;
     const confirmed = await requestInterviewConfirm({
       title: 'Pausar entrevista',
       message: 'La entrevista se guardará y podrás continuarla después.',
@@ -1192,20 +1258,24 @@ export default function Interviews({ setActiveView }) {
       cancelLabel: 'Continuar entrevista',
       variant: 'safe'
     });
-    if (!confirmed) return;
+    if (!confirmed || !isInterviewOwner(owner)) return;
 
     setErrorMsg('');
     ignorePendingCallbacksRef.current = true;
     cleanupInterviewSession(false);
 
     try {
-      const data = await apiRequest('/interview/pause', 'POST', { interviewId, responseMode: isTextModeRef.current ? 'text' : 'voice' });
+      const data = await withInterviewLock(interviewId, () => isInterviewOwner(owner)
+        ? apiRequest('/interview/pause', 'POST', { interviewId, responseMode: isTextModeRef.current ? 'text' : 'voice' })
+        : null);
+      if (!data || !isInterviewOwner(owner)) return;
       if (data.success) {
-        setPausedInterviews((interviews) => [data.interview, ...interviews.filter((interview) => interview.id !== interviewId)]);
+        setResumableInterviews((interviews) => [data.interview, ...interviews.filter((interview) => interview.id !== interviewId)]);
         setInterviewId(null);
         setIntState('launcher');
       }
     } catch (err) {
+      if (!isInterviewOwner(owner)) return;
       ignorePendingCallbacksRef.current = false;
       setIsPaused(false);
       setErrorMsg(mapError(err));
@@ -1214,7 +1284,8 @@ export default function Interviews({ setActiveView }) {
 
   // TERMINAR AHORA: cierra la entrevista con lo respondido y pide el análisis final.
   const handleFinishInterview = async (options = {}) => {
-    if (!interviewId) return;
+    const owner = interviewOwnerRef.current;
+    if (!interviewId || !isInterviewOwner(owner)) return;
     // Un comando de voz completo expresa la misma decisión que el botón de confirmar.
     const confirmed = options.source === 'voice' || await requestInterviewConfirm({
       title: 'Terminar ahora',
@@ -1236,12 +1307,16 @@ export default function Interviews({ setActiveView }) {
       if (!noAnswersConfirmed) return;
     }
 
+    if (!isInterviewOwner(owner)) return;
     stopSpeaking();
     ignorePendingCallbacksRef.current = true;
     setFinishingInterview(true);
     setErrorMsg('');
     try {
-      const data = await apiRequest('/interview/finish', 'POST', { interviewId });
+      const data = await withInterviewLock(interviewId, () => isInterviewOwner(owner)
+        ? apiRequest('/interview/finish', 'POST', { interviewId })
+        : null);
+      if (!data || !isInterviewOwner(owner)) return;
 
       if (data.discarded) {
         cleanupInterviewSession(true);
@@ -1269,6 +1344,7 @@ export default function Interviews({ setActiveView }) {
         setIntState('results');
       }
     } catch (err) {
+      if (!isInterviewOwner(owner)) return;
       ignorePendingCallbacksRef.current = false;
       setErrorMsg(mapError(err));
     } finally {
@@ -1279,6 +1355,7 @@ export default function Interviews({ setActiveView }) {
   // ABANDONAR: descarta la entrevista en curso (o la detectada al entrar).
   const handleAbandonInterview = async (id) => {
     if (!id || starting || abandoning) return;
+    const originalOwner = localStorage.getItem(interviewOwnerKey(id));
     const confirmed = await requestInterviewConfirm({
       title: 'Descartar entrevista',
       message: 'El progreso de esta entrevista se descartará y no podrás reanudarla.',
@@ -1286,15 +1363,21 @@ export default function Interviews({ setActiveView }) {
       cancelLabel: 'Conservar entrevista',
       variant: 'danger'
     });
-    if (!confirmed) return;
+    if (!confirmed || localStorage.getItem(interviewOwnerKey(id)) !== originalOwner) return;
 
     const isCurrentInterview = id === interviewId;
     setAbandoning(true);
     setErrorMsg('');
     if (isCurrentInterview) cleanupInterviewSession(true);
     try {
-      await apiRequest('/interview/abandon', 'POST', { interviewId: id });
-      setPausedInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
+      const discarded = await withInterviewLock(id, async () => {
+        if (localStorage.getItem(interviewOwnerKey(id)) !== originalOwner) return false;
+        await apiRequest('/interview/abandon', 'POST', { interviewId: id });
+        localStorage.removeItem(interviewOwnerKey(id));
+        return true;
+      });
+      if (!discarded) return;
+      setResumableInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
     } catch (err) {
       console.warn('[abandon] No se pudo descartar en backend:', err.message);
       setErrorMsg('No se pudo descartar la entrevista. Intenta de nuevo.');
@@ -1304,27 +1387,39 @@ export default function Interviews({ setActiveView }) {
     }
   };
 
-  // REANUDAR: retoma la entrevista pausada que el usuario seleccionó.
-  const handleResumeInterview = async (id) => {
-    if (starting || abandoning || microphoneSetupPending) return;
+  // Recupera la conversación guardada de la sesión que el usuario eligió.
+  const handleResumeInterview = async ({ id, status }, fromHistory = false) => {
+    if (starting || abandoning || resumeAttemptRef.current || (!fromHistory && microphoneSetupPending)) return;
 
+    const attempt = {};
+    resumeAttemptRef.current = attempt;
     setStarting(true);
     setErrorMsg('');
     let iv;
     let msgs;
     try {
-      const data = await apiRequest('/interview/resume', 'POST', { interviewId: id });
+      const data = await withInterviewLock(id, async () => {
+        if (resumeAttemptRef.current !== attempt) return null;
+        const result = await apiRequest('/interview/resume', 'POST', { interviewId: id });
+        if (resumeAttemptRef.current !== attempt) return null;
+        claimInterview(id);
+        return result;
+      });
+      if (!data || !isInterviewOwner(interviewOwnerRef.current)) return;
       iv = data.interview;
       msgs = data.messages || [];
     } catch (err) {
+      if (resumeAttemptRef.current !== attempt) return;
       setErrorMsg(mapError(err));
       return;
     } finally {
+      if (resumeAttemptRef.current === attempt) resumeAttemptRef.current = null;
       setStarting(false);
     }
 
     const lastAiMsg = [...msgs].reverse().find(m => m.sender === 'ai');
     setInterviewId(iv.id);
+    setTransferNotice('');
     ignorePendingCallbacksRef.current = false;
     setInterviewType(iv.interview_type);
     setDifficultyLevel(iv.difficulty_level || 'intermediate');
@@ -1354,24 +1449,42 @@ export default function Interviews({ setActiveView }) {
     const restored = restoreInterviewResponses(msgs);
     setSessionResponses(restored);
     sessionResponsesRef.current = restored;
-    const savedMode = resolveInterviewResponseMode(iv.profile_summary,msgs,localStorage.getItem(`empleaia_interview_mode_${iv.id}`)) || 'voice';
+    const localMode = localStorage.getItem(`empleaia_interview_mode_${iv.id}`);
+    const savedMode = status === 'active' && ['text', 'voice'].includes(localMode)
+      ? localMode
+      : resolveInterviewResponseMode(iv.profile_summary, msgs, localMode);
     const resumeInText = savedMode === 'text' || startInText;
     setIsTextMode(resumeInText);
     setAutoVoiceEnabled(!resumeInText);
     setEstimatedScore(interviewAverageScore(restored) == null ? '--' : `${interviewAverageScore(restored)}%`);
-    setQuestionCount((iv.questions_answered || 0) + 1);
+    setQuestionCount(lastAiMsg?.evaluation?.question_index || (iv.questions_answered || 0) + 1);
+    setTimeRemaining(ANSWER_SECONDS);
     setTotalQuestions(iv.total_questions || 5);
     setUserTextResponse('');
     setIsPaused(false);
     setCompletedEarly(false);
-    setPausedInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
+    setResumableInterviews((interviews) => interviews.filter((interview) => interview.id !== id));
+    if (requestedInterviewId) replaceCurrentPath('/interviews');
     setIntState('active');
   };
+
+  const resumeFromHistory = useEffectEvent((interview) => handleResumeInterview(interview, true));
+  useEffect(() => {
+    if (!requestedInterviewId) {
+      attemptedHistoryResumeRef.current = null;
+      return;
+    }
+    if (loading || profileLoadError || starting || (microphoneAvailable && microphonePermission === 'checking') ||
+        !requestedInterview || attemptedHistoryResumeRef.current === requestedInterviewId) return;
+    attemptedHistoryResumeRef.current = requestedInterviewId;
+    resumeFromHistory(requestedInterview);
+  }, [requestedInterviewId, requestedInterview, loading, profileLoadError, starting, microphoneAvailable, microphonePermission]);
 
   // ENVIAR RESPUESTA (Con soporte para envío automático por detección de silencio)
   const handleSendResponse = async (options = {}) => {
     const timedOut = options.timedOut === true;
-    if (ignorePendingCallbacksRef.current) return;
+    const owner = interviewOwnerRef.current;
+    if (ignorePendingCallbacksRef.current || !isInterviewOwner(owner)) return;
     const isCurrentlyRecording = isRecordingRef.current;
 
     // Evitar solicitudes duplicadas o condiciones de carrera (Requerimiento 12)
@@ -1401,6 +1514,7 @@ export default function Interviews({ setActiveView }) {
     const emptyTimedOut = timedOut && !textToSubmit.trim() && (!isCurrentlyRecording || !hasUserSpokenRef.current);
     if (emptyTimedOut) {
       if (isCurrentlyRecording) await stopActiveRecording();
+      if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
       cleanupAudioContext();
       setIsRecording(false);isRecordingRef.current = false;
       setShowRecordingPanel(false);
@@ -1421,7 +1535,7 @@ export default function Interviews({ setActiveView }) {
       console.log('[DEBUG] handleSendResponse: Grabación activa. Deteniendo grabación...');
       try {
         const audioBlob = await stopActiveRecording();
-        if (ignorePendingCallbacksRef.current) return;
+        if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
         setIsStopping(false);
         isStoppingRef.current = false;
         setIsRecording(false);
@@ -1438,7 +1552,7 @@ export default function Interviews({ setActiveView }) {
           setIsTranscribing(true);
           try {
             const transcript = await transcribeAudioBlob(audioBlob);
-            if (ignorePendingCallbacksRef.current) return;
+            if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
             setTranscriptionFailed(false);
             if (transcript && transcript.trim().length >= 3) {
               console.log('[DEBUG] handleSendResponse: Audio transcrito con éxito:', transcript);
@@ -1454,6 +1568,7 @@ export default function Interviews({ setActiveView }) {
               return;
             }
           } catch (transcribeErr) {
+            if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
             console.error('[DEBUG] handleSendResponse: Falló la transcripción del audio:', transcribeErr.code, transcribeErr);
             setTranscriptionFailed(true);
             const transcribeMsgs = {
@@ -1467,12 +1582,11 @@ export default function Interviews({ setActiveView }) {
             };
             setErrorMsg(transcribeMsgs[transcribeErr.code] || transcribeMsgs.server);
             setIsTextMode(true);
-            setIsTranscribing(false);
             isStoppingRef.current = false;
             isSubmittingRef.current = false;
             return;
           } finally {
-            setIsTranscribing(false);
+            if (isInterviewOwner(owner)) setIsTranscribing(false);
           }
         } else {
           activateTextFallbackForAudio(AUDIO_EMPTY_MESSAGE);
@@ -1517,38 +1631,44 @@ export default function Interviews({ setActiveView }) {
     });
 
     try {
-      const rawRes = await fetch(`${BACKEND_URL}/interview/respond`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token || ''}`
-        },
-        body: JSON.stringify({
-          interviewId:  interviewIdRef.current,
-          questionText: currentQuestionRef.current,
-          userAnswer:   textToSubmit,
-          responseMode: isTextModeRef.current ? 'text' : 'voice',
-          responseTimedOut: emptyTimedOut,
-          interviewType: interviewTypeRef.current
-        })
+      const result = await withInterviewLock(owner.id, async () => {
+        if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return null;
+        const rawRes = await fetch(`${BACKEND_URL}/interview/respond`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token || ''}`
+          },
+          body: JSON.stringify({
+            interviewId: owner.id,
+            questionText: currentQuestionRef.current,
+            userAnswer: textToSubmit,
+            responseMode: isTextModeRef.current ? 'text' : 'voice',
+            responseTimedOut: emptyTimedOut,
+            interviewType: interviewTypeRef.current
+          })
+        });
+
+        // Sesión expirada a mitad de entrevista: mismo tratamiento que apiRequest.
+        if (rawRes.status === 401) {
+          sessionStorage.setItem('empleaia_session_expired', '1');
+          await supabase.auth.signOut();
+          const sessionErr = new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+          sessionErr.code = 'SESSION_EXPIRED';
+          throw sessionErr;
+        }
+
+        const data = await rawRes.json();
+        return { rawRes, data };
       });
-
-      // Sesión expirada a mitad de entrevista: mismo tratamiento que apiRequest.
-      if (rawRes.status === 401) {
-        sessionStorage.setItem('empleaia_session_expired', '1');
-        await supabase.auth.signOut();
-        const sessionErr = new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
-        sessionErr.code = 'SESSION_EXPIRED';
-        throw sessionErr;
-      }
-
-      const data = await rawRes.json();
-      if (ignorePendingCallbacksRef.current) return;
+      if (!result || ignorePendingCallbacksRef.current || !isInterviewOwner(owner)) return;
+      const { rawRes, data } = result;
       console.log('[/interview/respond] Respuesta:', data);
 
       clearInterval(progressInterval);
       setAiProgress(100);
       await new Promise(r => setTimeout(r, 300));
+      if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
       setShowProgressLoader(false);
 
       // Caso: IA no disponible durante la entrevista → feedback pendiente
@@ -1636,11 +1756,13 @@ export default function Interviews({ setActiveView }) {
         }
       }
     } catch (err) {
+      if (!isInterviewOwner(owner) || ignorePendingCallbacksRef.current) return;
       console.error('[/interview/respond] Error de red:', err);
       clearInterval(progressInterval);
       setShowProgressLoader(false);
       setErrorMsg(err.message || 'No se pudo procesar tu respuesta.');
     } finally {
+      clearInterval(progressInterval);
       setSending(false);
       setIsSavingAnswer(false);
       setIsAdvancingQuestion(false);
@@ -1660,7 +1782,7 @@ export default function Interviews({ setActiveView }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showDetailsModal]);
 
-  if (loading) {
+  if (loading || (starting && requestedInterviewId)) {
     return (
       <div className="flex-1 min-h-full bg-slate-50 dark:bg-slate-900 flex flex-col justify-center items-center font-sans">
         <Loader2 className="h-8 w-8 text-indigo-650 animate-spin mb-2" />
@@ -1671,6 +1793,12 @@ export default function Interviews({ setActiveView }) {
 
   return (
     <div className="flex-1 min-h-full overflow-y-auto bg-slate-50 dark:bg-slate-900 px-4 py-6 font-sans sm:px-6 lg:px-8 lg:py-8">
+
+      {transferNotice && (
+        <p role="status" className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-950/30 dark:text-indigo-200">
+          {transferNotice}
+        </p>
+      )}
 
       {/* Mensaje de Error */}
       {errorMsg && (
@@ -1699,7 +1827,7 @@ export default function Interviews({ setActiveView }) {
         /* ========================================================= */
         <div className="mx-auto w-full max-w-[1600px] space-y-6">
           <ConfirmDialog
-            open={needsInterviewSetup && !setupDialogDismissed}
+            open={needsInterviewSetup && !setupDialogDismissed && !requestedInterview && !transferNotice}
             title={missingProfileContext ? 'Completa tu perfil para practicar' : 'Define el puesto para tu entrevista'}
             message={missingProfileContext ? profileRequirementMessage : `${targetRequirementMessage} Completa los datos en el CV para adaptar tus preguntas.`}
             confirmLabel={missingProfileContext ? 'Editar mi perfil' : 'Completar puesto en el CV'}
@@ -1709,7 +1837,7 @@ export default function Interviews({ setActiveView }) {
             onCancel={() => setSetupDialogDismissed(true)}
           />
           <ConfirmDialog
-            open={needsMicrophoneChoice}
+            open={needsMicrophoneChoice && !requestedInterview && (!transferNotice || !hasActiveInterview)}
             title="¿Quieres responder por voz?"
             message="Si eliges voz, el navegador pedirá permiso para usar el micrófono después de que termine la primera pregunta."
             confirmLabel="Responder por voz"
@@ -1759,15 +1887,28 @@ export default function Interviews({ setActiveView }) {
             </div>
           </div>
 
-          {pausedInterviews.length > 0 && (
+          {requestedInterviewId && !requestedInterview && (
+            <p role="status" className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+              La entrevista seleccionada ya no está disponible para continuar.
+            </p>
+          )}
+
+          {displayedInterviews.length > 0 && (
             <section className="bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-500/30 rounded-2xl p-5 shadow-sm">
-              <h2 className="text-xs font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">Entrevistas en pausa</h2>
-              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Puedes retomar cualquiera o iniciar una entrevista nueva.</p>
+              <h2 className="text-xs font-bold text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">Entrevistas para continuar</h2>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                {hasActiveInterview
+                  ? 'Para iniciar otra, continúa, pausa o descarta las entrevistas en curso.'
+                  : 'Puedes retomar una entrevista pausada o iniciar otra.'}
+              </p>
               <ul className="mt-3 divide-y divide-indigo-200 dark:divide-indigo-500/30">
-                {pausedInterviews.map((interview) => (
+                {displayedInterviews.map((interview) => (
                   <li key={interview.id} className="flex flex-col gap-2 py-3 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="text-sm font-bold text-slate-800 dark:text-slate-200">Entrevista {INTERVIEW_TYPE_LABELS[interview.interview_type] || interview.interview_type}</p>
+                      <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
+                        {interview.status === 'active' ? 'En curso' : 'Pausada'} · Nivel {DIFFICULTY_LABELS[interview.difficulty_level] || DIFFICULTY_LABELS.intermediate}
+                      </p>
                       <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-300">
                         {interview.questions_answered ?? 0} de {interview.total_questions ?? 5} respondidas · {new Date(interview.created_at).toLocaleString('es-PE', { dateStyle: 'medium', timeStyle: 'short' })}
                       </p>
@@ -1775,11 +1916,11 @@ export default function Interviews({ setActiveView }) {
                     <div className="flex gap-2 shrink-0">
                       <button
                         type="button"
-                        onClick={() => handleResumeInterview(interview.id)}
-                        disabled={starting || abandoning || microphoneSetupPending}
+                        onClick={() => handleResumeInterview(interview, Boolean(transferNotice) || interview.id === requestedInterviewId)}
+                        disabled={starting || abandoning || (microphoneSetupPending && !transferNotice && !requestedInterview)}
                         className="bg-indigo-650 hover:bg-indigo-700 text-white h-9 px-4 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
                       >
-                        <Play className="h-3.5 w-3.5" /> Reanudar
+                        <Play className="h-3.5 w-3.5" /> {interview.status === 'active' ? 'Continuar' : 'Reanudar'}
                       </button>
                       <button
                         type="button"
@@ -2081,8 +2222,11 @@ export default function Interviews({ setActiveView }) {
                   <div className="min-w-0">
                     <span className="text-[9px] text-indigo-600 dark:text-indigo-400 font-extrabold uppercase tracking-widest block">Sesión Interactiva Activa</span>
                     <h4 className="text-xs font-bold text-slate-900 dark:text-white capitalize truncate">
-                      Entrevista simulada - {interviewType === 'technical' ? 'Técnica' : interviewType === 'behavioral' ? 'Por Competencias' : 'General'}
+                      Entrevista simulada - {INTERVIEW_TYPE_LABELS[interviewType]}
                     </h4>
+                    <p className="mt-1 text-xs font-semibold text-indigo-650 dark:text-indigo-300">
+                      Nivel {DIFFICULTY_LABELS[difficultyLevel] || DIFFICULTY_LABELS.intermediate}
+                    </p>
                   </div>
                   <button
                     onClick={() => {
@@ -2147,11 +2291,11 @@ export default function Interviews({ setActiveView }) {
                   {completedEarly ? 'Análisis generado con IA' : 'Simulación Finalizada'}
                   <span className="h-1 w-1 rounded-full bg-slate-300"></span>
                   <span className="text-[8px] text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-150 dark:border-indigo-500/30 px-2 py-0.5 rounded font-black uppercase">
-                    Nivel {difficultyLevel === 'basic' ? 'Básico' : difficultyLevel === 'advanced' ? 'Avanzado' : 'Intermedio'}
+                    Nivel {DIFFICULTY_LABELS[difficultyLevel] || DIFFICULTY_LABELS.intermediate}
                   </span>
                 </span>
                 <h2 className="text-lg font-bold text-slate-900 dark:text-white">Resultados de la entrevista</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-300">Nivel realizado: {difficultyLevel === 'basic' ? 'Básico' : difficultyLevel === 'advanced' ? 'Avanzado' : 'Intermedio'}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-300">Nivel realizado: {DIFFICULTY_LABELS[difficultyLevel] || DIFFICULTY_LABELS.intermediate}</p>
               </div>
             </div>
             <div className="flex flex-wrap gap-2 lg:justify-end">

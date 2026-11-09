@@ -38,3 +38,7 @@ export const resolveInterviewResponseMode = (snapshot, messages = [], localMode 
   const firstQuestion = messages.find(m=>m.sender === 'ai');
   return isMode(firstQuestion?.evaluation?.response_mode) ? firstQuestion.evaluation.response_mode : null;
 };
+
+export function isResumableInterview(interview) {
+  return interview.status === 'active' || interview.status === 'paused';
+}

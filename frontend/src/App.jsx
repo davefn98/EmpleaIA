@@ -51,7 +51,7 @@ function App({ theme, onToggleTheme }) {
     setCurrentPath(path);
   };
 
-  const replaceDocumentPath = useCallback((path) => {
+  const replaceCurrentPath = useCallback((path) => {
     if (currentPath !== window.location.pathname || path === currentPath) return;
     window.history.replaceState({}, '', path);
     setCurrentPath(path);
@@ -82,6 +82,7 @@ function App({ theme, onToggleTheme }) {
 
   // Obtener la vista activa calculada a partir del pathname y estado de login (soportando rutas en español y módulos específicos)
   const documentDraft = readDocumentDraftPath(currentPath);
+  const requestedInterviewId = currentPath.match(/^\/interviews\/resume\/([0-9a-f-]{36})$/i)?.[1];
   const resumeLatestLetter = currentPath === '/documents/cover-letter' || currentPath === '/generar-documentos/carta';
   let activeView;
   if (!user) {
@@ -95,7 +96,7 @@ function App({ theme, onToggleTheme }) {
     else if (documentDraft?.type === 'cover-letter' || resumeLatestLetter || currentPath === NEW_LETTER_PATH) activeView = 'documents-cover-letter';
     else if (currentPath === '/documents' || currentPath === '/generar-documentos') activeView = 'documents-cv';
     else if (currentPath === '/interviews/compare') activeView = 'compare';
-    else if (currentPath === '/interviews' || currentPath === '/entrevistas') activeView = 'interviews';
+    else if (requestedInterviewId || currentPath === '/interviews' || currentPath === '/entrevistas') activeView = 'interviews';
     else if (currentPath === '/historial' || currentPath === '/history') activeView = 'history';
     else if (currentPath === '/metrics' || currentPath === '/mis-metricas') activeView = 'dashboard';
     else if (currentPath === '/validacion-pi2') activeView = 'pi2-validation';
@@ -425,7 +426,7 @@ function App({ theme, onToggleTheme }) {
         )}
 
         {activeView === 'dashboard' && <Dashboard setActiveView={setActiveView} navigateTo={navigateTo} />}
-        {activeView === 'pi2-validation' && <Pi2Validation key={user.id} userId={user.id} />}
+        {activeView === 'pi2-validation' && <Pi2Validation key={user.id} userId={user.id} navigateTo={navigateTo} />}
         
         {activeView === 'profile' && <Documents key={currentPath} mode="profile" initialDocType="cv" openImportOnMount={currentPath === '/profile/import'} navigateTo={navigateTo} />}
 
@@ -435,13 +436,13 @@ function App({ theme, onToggleTheme }) {
         
         {activeView === 'documents' && <Documents initialDocType="select" navigateTo={navigateTo} />}
         
-        {activeView === 'documents-cv' && <Documents key={currentPath} initialDocType="cv" openTargetOnMount={currentPath === CV_TARGET_PATH} navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceDocumentPath} documentVisitRef={documentVisitRef} />}
+        {activeView === 'documents-cv' && <Documents key={currentPath} initialDocType="cv" openTargetOnMount={currentPath === CV_TARGET_PATH} navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceCurrentPath} documentVisitRef={documentVisitRef} />}
         
-        {activeView === 'documents-cover-letter' && <Documents key={currentPath} initialDocType="letter" navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceDocumentPath} resumeLatestLetter={resumeLatestLetter} documentVisitRef={documentVisitRef} />}
+        {activeView === 'documents-cover-letter' && <Documents key={currentPath} initialDocType="letter" navigateTo={navigateTo} documentDraft={documentDraft} replaceDocumentPath={replaceCurrentPath} resumeLatestLetter={resumeLatestLetter} documentVisitRef={documentVisitRef} />}
         
         {activeView === 'drafts' && <Drafts navigateTo={navigateTo} />}
         
-        {activeView === 'interviews' && <Interviews setActiveView={setActiveView} />}
+        {activeView === 'interviews' && <Interviews setActiveView={setActiveView} requestedInterviewId={requestedInterviewId} replaceCurrentPath={replaceCurrentPath} />}
 
         {activeView === 'compare' && <CompareInterviews navigateTo={navigateTo} setActiveView={setActiveView} />}
 
