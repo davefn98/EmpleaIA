@@ -19,7 +19,7 @@ router.post('/documents/pdf', limit, express.json({ limit: '512kb' }), requireAu
     return res.set('Cache-Control', 'no-store').type('pdf').send(Buffer.from(bytes));
   } catch (error) {
     if (error.code === 'PDF_BUSY') return fail(res, error.message, 503, error.code);
-    console.error('[documents/pdf] Falló el renderizado:', error.name);
+    console.error('[documents/pdf] Falló el renderizado:', error.stack || error.message || error);
     return fail(res, 'No se pudo preparar el PDF. Intenta descargarlo de nuevo.', 503, 'PDF_EXPORT_ERROR');
   }
 });

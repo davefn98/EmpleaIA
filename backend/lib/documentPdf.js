@@ -5,7 +5,12 @@ let browserPromise;
 let activeRenders = 0;
 
 function getBrowser() {
-  browserPromise ??= puppeteer.launch({ timeout: 15000 }).then((browser) => {
+  // El contenedor de Render no permite el sandbox de Chrome ni garantiza /dev/shm.
+  const renderContainer = process.env.RENDER === 'true' && process.platform === 'linux';
+  browserPromise ??= puppeteer.launch({
+    timeout: 30000,
+    args: renderContainer ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] : [],
+  }).then((browser) => {
     browser.once('disconnected', () => { browserPromise = undefined; });
     return browser;
   }).catch((error) => {

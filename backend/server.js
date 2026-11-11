@@ -19,6 +19,9 @@ import { aiLimiter } from './lib/rateLimiters.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Render reenvía las peticiones a través de su proxy de entrada.
+if (process.env.RENDER === 'true') app.set('trust proxy', 1);
+
 // Configurar CORS. Los orígenes permitidos salen de la variable de entorno
 // CORS_ORIGINS (lista separada por comas); si no está, se usan los locales.
 const allowedOrigins = (process.env.CORS_ORIGINS
